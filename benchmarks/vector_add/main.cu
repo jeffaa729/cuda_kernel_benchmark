@@ -11,7 +11,7 @@
 #include <vector>
 
 namespace {
-
+//kernel
 __global__ void vector_add_kernel(const float* a, const float* b, float* c,
                                   std::size_t size) {
     const std::size_t index = blockIdx.x * blockDim.x + threadIdx.x;
