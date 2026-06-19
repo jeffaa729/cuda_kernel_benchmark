@@ -12,15 +12,18 @@ include/hpc/
   vector_add.hpp           hpc::vector_add and VectorAddAlgo
   transpose.hpp            hpc::transpose and TransposeAlgo
   reduction.hpp            hpc::reduction and ReductionAlgo
+  gemm.hpp                 hpc::gemm and GemmAlgo
 src/
   vector_add.cu            Vector-add CUDA implementations
   transpose.cu             Transpose CUDA implementations
   reduction.cu             Reduction CUDA implementations
+  gemm.cu                  GEMM CUDA implementations
 benchmarks/
   main.cu                  Dispatches benchmark functions from one executable
   vector_add/vector_add_benchmark.cu Benchmarks hpc::vector_add
   transpose/transpose_benchmark.cu   Benchmarks hpc::transpose
   reduction/reduction_benchmark.cu   Benchmarks hpc::reduction
+  gemm/gemm_benchmark.cu             Benchmarks hpc::gemm
 include/cuda_bench/
   benchmarks.hpp           Benchmark function declarations
   benchmark.hpp            Shared CLI helpers
@@ -57,6 +60,7 @@ make vector_add
 make vector_add ARGS="16777216"
 make transpose ARGS="4096"
 make reduction ARGS="16777216"
+make gemm ARGS="512"
 make run BENCH=vector_add ARGS="16777216"
 ```
 
@@ -68,6 +72,7 @@ failure. Use Nsight Compute for profiling:
 ncu ./build/bin/cuda_benchmarks transpose 4096
 ncu ./build/bin/cuda_benchmarks vector_add 16777216
 ncu ./build/bin/cuda_benchmarks reduction 16777216
+ncu ./build/bin/cuda_benchmarks gemm 512
 ```
 
 Run the small correctness smoke tests with:

@@ -6,6 +6,7 @@ namespace hpc {
 
 enum class ReductionAlgo {
     Interleave,
+    Address
 };
 
 const char* to_string(ReductionAlgo algo);

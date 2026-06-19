@@ -27,6 +27,7 @@ add_library(hpc_cuda STATIC
     src/vector_add.cu
     src/transpose.cu
     src/reduction.cu
+    src/gemm.cu
 )
 target_include_directories(hpc_cuda PUBLIC "${PROJECT_SOURCE_DIR}/include")
 apply_cuda_benchmark_options(hpc_cuda)
@@ -43,6 +44,7 @@ add_cuda_benchmark(cuda_benchmarks
     benchmarks/vector_add/vector_add_benchmark.cu
     benchmarks/transpose/transpose_benchmark.cu
     benchmarks/reduction/reduction_benchmark.cu
+    benchmarks/gemm/gemm_benchmark.cu
 )
 
 include(CTest)
@@ -50,7 +52,9 @@ if(BUILD_TESTING)
     add_test(NAME vector_add_smoke
              COMMAND cuda_benchmarks vector_add 1048576)
     add_test(NAME transpose_smoke
-             COMMAND cuda_benchmarks transpose 128 256)
+             COMMAND cuda_benchmarks transpose 128)
     add_test(NAME reduction_smoke
              COMMAND cuda_benchmarks reduction 1048576)
+    add_test(NAME gemm_smoke
+             COMMAND cuda_benchmarks gemm 64)
 endif()
