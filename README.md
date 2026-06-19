@@ -1,24 +1,37 @@
-# CUDA Benchmark Suite
+# CUDA HPC Library And Benchmark Suite
 
-A growing suite for comparing reference CPU implementations with CUDA kernels.
-The first benchmark is vector addition; future operations can have independent
-dependencies, command-line options, correctness checks, and performance metrics.
+A small CUDA high-performance computing library with benchmarks that compare CPU
+references against library kernels. The library currently exposes vector add and
+transpose operations.
 
 ## Layout
 
 ```text
+include/hpc/
+  hpc.hpp                  Convenience include for public library APIs
+  vector_add.hpp           hpc::vector_add and VectorAddAlgo
+  transpose.hpp            hpc::transpose and TransposeAlgo
+  reduction.hpp            hpc::reduction and ReductionAlgo
+src/
+  vector_add.cu            Vector-add CUDA implementations
+  transpose.cu             Transpose CUDA implementations
+  reduction.cu             Reduction CUDA implementations
 benchmarks/
-  vector_add/main.cu       Operation-specific CPU/GPU code and driver
+  main.cu                  Dispatches benchmark functions from one executable
+  vector_add/vector_add_benchmark.cu Benchmarks hpc::vector_add
+  transpose/transpose_benchmark.cu   Benchmarks hpc::transpose
+  reduction/reduction_benchmark.cu   Benchmarks hpc::reduction
 include/cuda_bench/
-  benchmark.hpp            Shared CLI, CPU timing, and reporting helpers
-  cuda_utils.cuh           CUDA error checks, device buffers, and events
-CMakeLists.txt              Benchmark targets and smoke tests
+  benchmarks.hpp           Benchmark function declarations
+  benchmark.hpp            Shared CLI helpers
+  cuda_utils.cuh           CUDA error checks and device buffers
+CMakeLists.txt              hpc_cuda library, benchmark target, and smoke tests
 Makefile                    Convenience wrapper around CMake
 ```
 
-Add new operations under `benchmarks/<name>/`. Keep kernel implementations and
-their reference code local until multiple benchmarks genuinely share them.
-Register each executable with `add_cuda_benchmark` in `CMakeLists.txt`.
+Add new operations by creating a public API under `include/hpc/`, implementing
+CUDA kernels under `src/`, and then adding a benchmark under `benchmarks/<name>/`.
+Benchmarks should call the `hpc::` API instead of defining kernels directly.
 
 ## Build
 
@@ -39,12 +52,23 @@ make
 ## Run
 
 ```bash
-./build/bin/vector_add_benchmark
-./build/bin/vector_add_benchmark 16777216 20
+make run
+make vector_add
+make vector_add ARGS="16777216"
+make transpose ARGS="4096"
+make reduction ARGS="16777216"
+make run BENCH=vector_add ARGS="16777216"
 ```
 
-The vector-add benchmark reports CPU time, GPU kernel-only time, GPU end-to-end
-time including transfers, effective bandwidth, and maximum validation error.
+The benchmark executable does not print timings. It launches kernels repeatedly
+and validates results against CPU references, returning a nonzero exit code on
+failure. Use Nsight Compute for profiling:
+
+```bash
+ncu ./build/bin/cuda_benchmarks transpose 4096
+ncu ./build/bin/cuda_benchmarks vector_add 16777216
+ncu ./build/bin/cuda_benchmarks reduction 16777216
+```
 
 Run the small correctness smoke tests with:
 
@@ -54,10 +78,11 @@ ctest --test-dir build --output-on-failure
 
 ## Growth Guidelines
 
-- Use one executable per operation rather than one large mode-switching binary.
-- Measure kernel-only and end-to-end costs separately.
+- Keep public operation APIs under `hpc::`, with algorithms selected by enums.
+- Use one benchmark function per operation and dispatch them from `benchmarks/main.cu`.
+- Use Nsight Compute for timing, roofline, and memory-workload metrics.
 - Keep a straightforward CPU implementation for correctness and comparison.
-- Report bandwidth for memory-bound kernels and FLOP/s for compute-bound kernels.
+- Keep benchmark output minimal so profiler output is easy to read.
 - Add optional libraries such as cuBLAS, cuDNN, or CUTLASS only to targets that
   need them.
 - Store scripts and machine-readable result files separately from benchmark code
