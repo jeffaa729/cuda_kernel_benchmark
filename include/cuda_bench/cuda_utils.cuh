@@ -47,26 +47,4 @@ private:
     std::size_t count_ = 0;
 };
 
-class CudaEvent {
-public:
-    CudaEvent() { CUDA_CHECK(cudaEventCreate(&event_)); }
-    ~CudaEvent() { cudaEventDestroy(event_); }
-
-    CudaEvent(const CudaEvent&) = delete;
-    CudaEvent& operator=(const CudaEvent&) = delete;
-
-    void record() { CUDA_CHECK(cudaEventRecord(event_)); }
-    void synchronize() { CUDA_CHECK(cudaEventSynchronize(event_)); }
-    cudaEvent_t get() const { return event_; }
-
-private:
-    cudaEvent_t event_{};
-};
-
-inline double elapsed_ms(const CudaEvent& start, const CudaEvent& stop) {
-    float milliseconds = 0.0f;
-    CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start.get(), stop.get()));
-    return milliseconds;
-}
-
 }  // namespace cuda_bench
