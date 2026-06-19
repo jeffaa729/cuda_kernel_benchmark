@@ -12,7 +12,8 @@ void print_usage(const char* program) {
               << "  " << program << " all\n"
               << "  " << program << " vector_add [elements]\n"
               << "  " << program << " transpose [n]\n"
-              << "  " << program << " reduction [elements]\n";
+              << "  " << program << " reduction [elements]\n"
+              << "  " << program << " gemm [n]\n";
 }
 
 }  // namespace
@@ -27,6 +28,8 @@ int main(int argc, char** argv) {
         status |= cuda_bench::transpose_benchmark(4096);
         std::cout << '\n';
         status |= cuda_bench::reduction_benchmark(1ULL << 24);
+        std::cout << '\n';
+        status |= cuda_bench::gemm_benchmark(512);
         return status == EXIT_SUCCESS ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
@@ -48,6 +51,12 @@ int main(int argc, char** argv) {
             argc > 2 ? cuda_bench::parse_positive_size(argv[2], "size")
                      : 1ULL << 24;
         return cuda_bench::reduction_benchmark(size);
+    }
+
+    if (benchmark == "gemm") {
+        const std::size_t n =
+            argc > 2 ? cuda_bench::parse_positive_size(argv[2], "n") : 512;
+        return cuda_bench::gemm_benchmark(n);
     }
 
     std::cerr << "Unknown benchmark: " << benchmark << "\n\n";
