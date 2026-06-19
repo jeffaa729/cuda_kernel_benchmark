@@ -12,8 +12,8 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES native)
 endif()
 
-function(add_cuda_benchmark target source)
-    add_executable(${target} ${source})
+function(add_cuda_benchmark target)
+    add_executable(${target} ${ARGN})
     target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/include")
     target_compile_options(${target} PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:-O3>
@@ -25,10 +25,16 @@ function(add_cuda_benchmark target source)
     )
 endfunction()
 
-add_cuda_benchmark(vector_add_benchmark benchmarks/vector_add/main.cu)
+add_cuda_benchmark(cuda_benchmarks
+    benchmarks/main.cu
+    benchmarks/vector_add/vector_add.cu
+    benchmarks/transpose/transpose.cu
+)
 
 include(CTest)
 if(BUILD_TESTING)
     add_test(NAME vector_add_smoke
-             COMMAND vector_add_benchmark 1048576 2)
+             COMMAND cuda_benchmarks vector_add 1048576 2)
+    add_test(NAME transpose_smoke
+             COMMAND cuda_benchmarks transpose 128 256)
 endif()

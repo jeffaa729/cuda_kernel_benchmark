@@ -41,6 +41,18 @@ double measure_cpu_ms(std::size_t iterations, Function&& function) {
            static_cast<double>(iterations);
 }
 
+inline void print_benchmark_header(const std::string& benchmark,
+                                   const std::string& problem_size,
+                                   std::size_t iterations) {
+    std::cout << "Benchmark: " << benchmark << '\n'
+              << "Problem size: " << problem_size << '\n'
+              << "Iterations: " << iterations << "\n\n"
+              << std::left << std::setw(24) << "Method" << std::right
+              << std::setw(12) << "Time (ms)" << std::setw(21)
+              << "Throughput" << '\n'
+              << std::string(57, '-') << '\n';
+}
+
 inline void print_metric_row(const std::string& method, double milliseconds,
                              double metric, const std::string& unit) {
     std::cout << std::left << std::setw(24) << method << std::right
@@ -48,10 +60,8 @@ inline void print_metric_row(const std::string& method, double milliseconds,
               << milliseconds << std::setw(16) << metric << ' ' << unit << '\n';
 }
 
-inline void print_time_row(const std::string& method, double milliseconds) {
-    std::cout << std::left << std::setw(24) << method << std::right
-              << std::setw(12) << std::fixed << std::setprecision(3)
-              << milliseconds << std::setw(21) << "n/a" << '\n';
+inline void print_validation_error(double max_error) {
+    std::cout << "\nMax absolute error: " << std::scientific << max_error << '\n';
 }
 
 }  // namespace cuda_bench
