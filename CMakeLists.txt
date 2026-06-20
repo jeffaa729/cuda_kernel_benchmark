@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.24)
 
 project(cuda_benchmark LANGUAGES CXX CUDA)
 
+find_package(CUDAToolkit REQUIRED)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
@@ -30,6 +32,7 @@ add_library(hpc_cuda STATIC
     src/gemm.cu
 )
 target_include_directories(hpc_cuda PUBLIC "${PROJECT_SOURCE_DIR}/include")
+target_link_libraries(hpc_cuda PUBLIC CUDA::cublas)
 apply_cuda_benchmark_options(hpc_cuda)
 
 function(add_cuda_benchmark target)

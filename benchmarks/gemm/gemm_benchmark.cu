@@ -88,8 +88,13 @@ int gemm_benchmark(std::size_t n) {
         hpc::GemmAlgo::Register, device_a, device_b, device_c,
         gpu_result.data(), cpu_result.data(), size, n);
 
-    return naive_valid && tiled_valid && register_valid ? EXIT_SUCCESS
-                                                        : EXIT_FAILURE;
+    const bool cublas_valid = run_and_validate_gemm(
+        hpc::GemmAlgo::Cublas, device_a, device_b, device_c, gpu_result.data(),
+        cpu_result.data(), size, n);
+
+    return naive_valid && tiled_valid && register_valid && cublas_valid
+               ? EXIT_SUCCESS
+               : EXIT_FAILURE;
 }
 
 }  // namespace cuda_bench

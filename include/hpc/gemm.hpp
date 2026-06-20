@@ -8,6 +8,7 @@ enum class GemmAlgo {
     Naive,
     Tiled,
     Register,
+    Cublas,
 };
 
 const char* to_string(GemmAlgo algo);

@@ -1,6 +1,9 @@
 #include <hpc/gemm.hpp>
 
+#include <cublas_v2.h>
 #include <cuda_runtime.h>
+
+#include <stdexcept>
 
 namespace {
 
@@ -10,6 +13,12 @@ constexpr int BN = 128;
 constexpr int BK = 8;
 constexpr int TM = 8;
 constexpr int TN = 8;
+
+void cublas_check(cublasStatus_t status) {
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        throw std::runtime_error("cuBLAS call failed");
+    }
+}
 
 // Naive kernel: one thread computes one C[row, col].
 __global__ void gemm_naive_kernel(const float* a, const float* b, float* c,
@@ -151,6 +160,18 @@ void launch_gemm_register(const float* a, const float* b, float* c, int N) {
     gemm_register_kernel<<<blocks, threads>>>(a, b, c, N);
 }
 
+void launch_gemm_cublas(const float* a, const float* b, float* c, int N) {
+    cublasHandle_t handle;
+    cublas_check(cublasCreate(&handle));
+    cublas_check(cublasSetMathMode(handle, CUBLAS_PEDANTIC_MATH));
+
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    cublas_check(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, N, N,
+                             &alpha, b, N, a, N, &beta, c, N));
+    cublas_check(cublasDestroy(handle));
+}
+
 }  // namespace
 
 namespace hpc {
@@ -163,6 +184,8 @@ const char* to_string(GemmAlgo algo) {
             return "tiled";
         case GemmAlgo::Register:
             return "register";
+        case GemmAlgo::Cublas:
+            return "cublas";
     }
     return "unknown";
 }
@@ -177,6 +200,9 @@ void gemm(const float* a, const float* b, float* c, int N, GemmAlgo algo) {
             return;
         case GemmAlgo::Register:
             launch_gemm_register(a, b, c, N);
+            return;
+        case GemmAlgo::Cublas:
+            launch_gemm_cublas(a, b, c, N);
             return;
     }
 }
