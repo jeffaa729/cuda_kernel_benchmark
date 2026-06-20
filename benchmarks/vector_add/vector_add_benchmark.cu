@@ -33,7 +33,6 @@ int vector_add_benchmark(std::size_t size) {
     std::uniform_real_distribution<float> distribution(-1.0f, 1.0f);
     std::generate(a.begin(), a.end(), [&] { return distribution(generator); });
     std::generate(b.begin(), b.end(), [&] { return distribution(generator); });
-
     vector_add_cpu(a.data(), b.data(), cpu_result.data(), size);
 
     cuda_bench::DeviceBuffer<float> device_a(size);

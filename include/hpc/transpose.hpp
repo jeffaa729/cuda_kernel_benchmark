@@ -13,6 +13,6 @@ enum class TransposeAlgo {
 const char* to_string(TransposeAlgo algo);
 
 void transpose(const float* input, float* output, std::size_t size,
-               TransposeAlgo algo = TransposeAlgo::Naive);
+               TransposeAlgo algo = TransposeAlgo::Padding);
 
 }  // namespace hpc
