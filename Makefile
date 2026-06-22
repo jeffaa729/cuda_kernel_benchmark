@@ -3,7 +3,7 @@ CMAKE ?= cmake
 BENCH ?= all
 ARGS ?=
 
-.PHONY: all configure run vector_add transpose reduction gemm test clean
+.PHONY: all configure run vector_add transpose reduction gemm softmax test clean
 
 all: configure
 	$(CMAKE) --build $(BUILD_DIR) --parallel
@@ -25,6 +25,9 @@ reduction: all
 
 gemm: all
 	./$(BUILD_DIR)/bin/cuda_benchmarks gemm $(ARGS)
+
+softmax: all
+	./$(BUILD_DIR)/bin/cuda_benchmarks softmax $(ARGS)
 
 test: all
 	ctest --test-dir $(BUILD_DIR) --output-on-failure
