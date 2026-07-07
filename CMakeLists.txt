@@ -31,6 +31,7 @@ add_library(hpc_cuda STATIC
     src/reduction.cu
     src/gemm.cu
     src/softmax.cu
+    src/conv2d.cu
 )
 target_include_directories(hpc_cuda PUBLIC "${PROJECT_SOURCE_DIR}/include")
 target_link_libraries(hpc_cuda PUBLIC CUDA::cublas)
@@ -50,6 +51,7 @@ add_cuda_benchmark(cuda_benchmarks
     benchmarks/reduction/reduction_benchmark.cu
     benchmarks/gemm/gemm_benchmark.cu
     benchmarks/softmax/softmax_benchmark.cu
+    benchmarks/conv2d/conv2d_benchmark.cu
 )
 
 include(CTest)
@@ -64,4 +66,6 @@ if(BUILD_TESTING)
              COMMAND cuda_benchmarks gemm 64)
     add_test(NAME softmax_smoke
              COMMAND cuda_benchmarks softmax 128 256)
+    add_test(NAME conv2d_smoke
+             COMMAND cuda_benchmarks conv2d 2 3 8 8 4)
 endif()

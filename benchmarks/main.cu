@@ -14,7 +14,9 @@ void print_usage(const char* program) {
               << "  " << program << " transpose [n]\n"
               << "  " << program << " reduction [elements]\n"
               << "  " << program << " gemm [n]\n"
-              << "  " << program << " softmax [rows] [cols]\n";
+              << "  " << program << " softmax [rows] [cols]\n"
+              << "  " << program
+              << " conv2d [batch] [c_in] [height] [width] [c_out]\n";
 }
 
 }  // namespace
@@ -33,6 +35,8 @@ int main(int argc, char** argv) {
         status |= cuda_bench::gemm_benchmark(512);
         std::cout << '\n';
         status |= cuda_bench::softmax_benchmark(4096, 1024);
+        std::cout << '\n';
+        status |= cuda_bench::conv2d_benchmark(64, 16, 16, 16, 32);
         return status == EXIT_SUCCESS ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
@@ -68,6 +72,20 @@ int main(int argc, char** argv) {
         const std::size_t cols =
             argc > 3 ? cuda_bench::parse_positive_size(argv[3], "cols") : 1024;
         return cuda_bench::softmax_benchmark(rows, cols);
+    }
+
+    if (benchmark == "conv2d") {
+        const std::size_t batch =
+            argc > 2 ? cuda_bench::parse_positive_size(argv[2], "batch") : 64;
+        const std::size_t c_in =
+            argc > 3 ? cuda_bench::parse_positive_size(argv[3], "c_in") : 16;
+        const std::size_t height =
+            argc > 4 ? cuda_bench::parse_positive_size(argv[4], "height") : 16;
+        const std::size_t width =
+            argc > 5 ? cuda_bench::parse_positive_size(argv[5], "width") : 16;
+        const std::size_t c_out =
+            argc > 6 ? cuda_bench::parse_positive_size(argv[6], "c_out") : 32;
+        return cuda_bench::conv2d_benchmark(batch, c_in, height, width, c_out);
     }
 
     std::cerr << "Unknown benchmark: " << benchmark << "\n\n";
