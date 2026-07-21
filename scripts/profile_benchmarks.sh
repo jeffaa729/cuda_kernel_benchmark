@@ -3,6 +3,28 @@ set -euo pipefail
 
 export PATH="/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
 
+usage() {
+    cat <<'EOF'
+Usage:
+  scripts/profile_benchmarks.sh [benchmark] [benchmark args...]
+  scripts/profile_benchmarks.sh summarize <benchmark> <csv> [benchmark args...]
+
+Benchmarks:
+  all           Profile every benchmark one at a time (default)
+  vector_add    [elements]
+  transpose     [n]
+  reduction     [elements]
+  gemm          [n]
+  softmax       [rows] [cols]
+  conv2d        [batch] [c_in] [height] [width] [c_out]
+
+Examples:
+  scripts/profile_benchmarks.sh
+  scripts/profile_benchmarks.sh gemm 512
+  scripts/profile_benchmarks.sh summarize gemm profiles/gemm.csv 512
+EOF
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
@@ -39,6 +61,48 @@ default_args_for() {
     esac
 }
 
+flop_count_for() {
+    local name="$1"
+    shift
+    local args=("$@")
+
+    if [[ ${#args[@]} -eq 0 ]]; then
+        read -r -a args <<<"$(default_args_for "$name")"
+    fi
+
+    case "$name" in
+        vector_add)
+            echo "${args[0]}"
+            ;;
+        reduction)
+            local block_size=1024
+            local blocks=$((args[0] / block_size))
+            echo $((blocks * (block_size - 1)))
+            ;;
+        gemm)
+            local n="${args[0]}"
+            echo $((2 * n * n * n))
+            ;;
+        conv2d)
+            local batch="${args[0]}"
+            local c_in="${args[1]}"
+            local height="${args[2]}"
+            local width="${args[3]}"
+            local c_out="${args[4]}"
+            local kernel_h=3
+            local kernel_w=3
+            local padding=1
+            local stride=1
+            local height_out=$(((height + 2 * padding - kernel_h) / stride + 1))
+            local width_out=$(((width + 2 * padding - kernel_w) / stride + 1))
+            echo $((2 * batch * c_out * height_out * width_out * c_in * kernel_h * kernel_w))
+            ;;
+        *)
+            echo 0
+            ;;
+    esac
+}
+
 known_benchmark() {
     case "$1" in
         vector_add|transpose|reduction|gemm|softmax|conv2d) return 0 ;;
@@ -71,6 +135,8 @@ profile_one() {
     local report="${base}.ncu-rep"
     local csv="${base}.csv"
     local summary="${base}_summary.txt"
+    local flops
+    flops="$(flop_count_for "$name" "${args[@]}")"
 
     if [[ "$VERBOSE" == "1" ]]; then
         echo
@@ -87,7 +153,7 @@ profile_one() {
         ncu_collection_args=(--set "$NCU_SET")
     fi
 
-    "$NCU" \
+    CUDA_BENCH_DEVICE_INFO=0 "$NCU" \
         "${ncu_collection_args[@]}" \
         --target-processes all \
         --force-overwrite \
@@ -97,14 +163,15 @@ profile_one() {
         --log-file "$csv" \
         "$BIN" "$name" "${args[@]}"
 
-    summarize_csv "$name" "$csv" | tee "$summary"
+    summarize_csv "$name" "$csv" "$flops" | tee "$summary"
 }
 
 summarize_csv() {
     local bench_name="$1"
     local csv_file="$2"
+    local flops="${3:-0}"
 
-    awk -v bench="$bench_name" '
+    awk -v bench="$bench_name" -v flops="$flops" '
     function trim(s) {
         gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", s)
         return s
@@ -173,8 +240,8 @@ summarize_csv() {
     }
 
     BEGIN {
-        printf "%-22s %-44s %14s %10s %10s %10s %10s %14s\n", bench, "Kernel", "Runtime", "Speedup", "SM %", "Mem %", "DRAM %", "Occupancy %"
-        printf "%-22s %-44s %14s %10s %10s %10s %10s %14s\n", "--------", "------", "-------", "-------", "----", "-----", "------", "-----------"
+        printf "%-22s %-44s %14s %10s %10s %10s %10s %10s %14s\n", bench, "Kernel", "Runtime", "TFLOP/s", "Speedup", "SM %", "Mem %", "DRAM %", "Occupancy %"
+        printf "%-22s %-44s %14s %10s %10s %10s %10s %10s %14s\n", "--------", "------", "-------", "-------", "-------", "----", "-----", "------", "-----------"
     }
 
     /"Kernel Name"/ && !/"Metric Name"/ {
@@ -282,15 +349,21 @@ summarize_csv() {
                 speedup = sprintf("%.2fx", naive_runtime_ns / runtime_ns)
             }
 
+            tflops = "-"
+            if (flops > 0 && runtime_ns > 0) {
+                tflops = sprintf("%.3f", flops / (runtime_ns * 1000.0))
+            }
+
             display_kernel = key
             if (length(display_kernel) > 44) {
                 display_kernel = substr(display_kernel, 1, 41) "..."
             }
 
-            printf "%-22s %-44s %14s %10s %10s %10s %10s %14s\n",
+            printf "%-22s %-44s %14s %10s %10s %10s %10s %10s %14s\n",
                 approach(key),
                 display_kernel,
                 runtime,
+                tflops,
                 speedup,
                 metric_value(key, "sm_pct"),
                 metric_value(key, "mem_pct"),
@@ -316,12 +389,16 @@ if [[ "$bench" == "all" ]]; then
         first=0
     done
 elif [[ "$bench" == "summarize" ]]; then
-    if [[ $# -ne 2 ]]; then
+    if [[ $# -lt 2 ]]; then
         echo "error: summarize needs a benchmark name and CSV path" >&2
         usage >&2
         exit 1
     fi
-    summarize_csv "$1" "$2"
+    summary_bench="$1"
+    summary_csv="$2"
+    shift 2
+    summary_flops="$(flop_count_for "$summary_bench" "$@")"
+    summarize_csv "$summary_bench" "$summary_csv" "$summary_flops"
 elif known_benchmark "$bench"; then
     profile_one "$bench" "$@"
 else
