@@ -1,11 +1,104 @@
 #include <cuda_bench/benchmark.hpp>
 #include <cuda_bench/benchmarks.hpp>
+#include <cuda_bench/cuda_utils.cuh>
+
+#include <cuda_runtime.h>
 
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
 #include <string>
 
 namespace {
+
+int fp32_cores_per_sm(int major, int minor) {
+    switch (major) {
+        case 9:
+            return 128;
+        case 8:
+            return minor == 0 ? 64 : 128;
+        case 7:
+            return 64;
+        case 6:
+            return minor == 0 ? 64 : 128;
+        case 5:
+            return 128;
+        case 3:
+            return 192;
+        case 2:
+            return minor == 1 ? 48 : 32;
+        default:
+            return 0;
+    }
+}
+
+bool device_info_enabled() {
+    const char* value = std::getenv("CUDA_BENCH_DEVICE_INFO");
+    return value == nullptr || std::string(value) != "0";
+}
+
+void print_device_peak_reference() {
+    if (!device_info_enabled()) {
+        return;
+    }
+
+    int device = 0;
+    cudaError_t status = cudaGetDevice(&device);
+    if (status != cudaSuccess) {
+        std::cerr << "CUDA device query failed: " << cudaGetErrorString(status)
+                  << '\n';
+        return;
+    }
+
+    cudaDeviceProp properties{};
+    status = cudaGetDeviceProperties(&properties, device);
+    if (status != cudaSuccess) {
+        std::cerr << "CUDA device properties query failed: "
+                  << cudaGetErrorString(status) << '\n';
+        return;
+    }
+
+    int clock_rate_khz = 0;
+    int memory_clock_rate_khz = 0;
+    int memory_bus_width_bits = 0;
+    CUDA_CHECK(cudaDeviceGetAttribute(&clock_rate_khz, cudaDevAttrClockRate,
+                                      device));
+    CUDA_CHECK(cudaDeviceGetAttribute(&memory_clock_rate_khz,
+                                      cudaDevAttrMemoryClockRate, device));
+    CUDA_CHECK(cudaDeviceGetAttribute(&memory_bus_width_bits,
+                                      cudaDevAttrGlobalMemoryBusWidth,
+                                      device));
+
+    const int cores_per_sm =
+        fp32_cores_per_sm(properties.major, properties.minor);
+    const double core_clock_ghz = clock_rate_khz / 1.0e6;
+    const double memory_clock_ghz = memory_clock_rate_khz / 1.0e6;
+    const double estimated_fp32_tflops =
+        cores_per_sm == 0
+            ? 0.0
+            : properties.multiProcessorCount * cores_per_sm *
+                  core_clock_ghz * 2.0 / 1000.0;
+    const double estimated_memory_gbs =
+        2.0 * memory_clock_rate_khz * (memory_bus_width_bits / 8.0) /
+        1.0e6;
+
+    std::cout << std::fixed << std::setprecision(2)
+              << "GPU: " << properties.name << " (SM "
+              << properties.major << '.' << properties.minor << ")\n"
+              << "Estimated peak reference: ";
+
+    if (estimated_fp32_tflops > 0.0) {
+        std::cout << estimated_fp32_tflops << " TFLOP/s FP32, ";
+    } else {
+        std::cout << "FP32 peak unavailable for this SM version, ";
+    }
+
+    std::cout << estimated_memory_gbs << " GB/s memory bandwidth"
+              << " (" << properties.multiProcessorCount << " SMs, "
+              << core_clock_ghz << " GHz core, "
+              << memory_clock_ghz << " GHz memory, "
+              << memory_bus_width_bits << "-bit bus)\n\n";
+}
 
 void print_usage(const char* program) {
     std::cout << "Usage:\n"
@@ -23,6 +116,8 @@ void print_usage(const char* program) {
 
 int main(int argc, char** argv) {
     const std::string benchmark = argc > 1 ? argv[1] : "all";
+
+    print_device_peak_reference();
 
     if (benchmark == "all") {
         int status = EXIT_SUCCESS;

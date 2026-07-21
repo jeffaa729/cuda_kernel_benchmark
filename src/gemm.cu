@@ -21,6 +21,7 @@ void cublas_check(cublasStatus_t status) {
 }
 
 // Naive kernel: one thread computes one C[row, col].
+// naive coalesced memory access : fast thread index for indexing the row of matrices that are stored in row-major order
 __global__ void gemm_naive_kernel(const float* a, const float* b, float* c,
                                   int N) {
     const int col = blockDim.x * blockIdx.x + threadIdx.x;
@@ -42,7 +43,7 @@ void launch_gemm_naive(const float* a, const float* b, float* c, int N) {
     gemm_naive_kernel<<<blocks, threads>>>(a, b, c, N);
 }
 
-// Tiled kernel: cache A and B tiles in shared memory.
+// Tiled kernel: each thread computes one C[row, col] using shared memory.
 __global__ void gemm_tiled_kernel(const float* a, const float* b, float* c,
                                   int N) {
     __shared__ float As[TS][TS];
