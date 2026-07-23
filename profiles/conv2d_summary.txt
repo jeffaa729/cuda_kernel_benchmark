@@ -1,0 +1,4 @@
+conv2d                 Kernel                                              Runtime    Speedup       SM %      Mem %     DRAM %    Occupancy %
+--------               ------                                              -------    -------       ----      -----     ------    -----------
+Naive                  <unnamed>::conv2d_naive_kernel(const floa...       44032 ns      1.00x      73.84      61.19       2.77          87.41
+Tiled                  <unnamed>::conv2d_3x3_tiled_kernel(const ...       41984 ns      1.05x      73.28      73.28       2.93          91.40

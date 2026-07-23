@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <iostream>
 #include <random>
 #include <vector>
 
@@ -46,6 +47,11 @@ bool run_and_validate_gemm(hpc::GemmAlgo algo,
         const float tolerance =
             1.0e-3f * std::max(1.0f, std::abs(cpu_result[i]));
         if (std::abs(cpu_result[i] - gpu_result[i]) > tolerance) {
+            std::cerr << "GEMM " << hpc::to_string(algo)
+                      << " validation failed at index " << i
+                      << ": CPU=" << cpu_result[i]
+                      << ", GPU=" << gpu_result[i]
+                      << ", tolerance=" << tolerance << '\n';
             return false;
         }
     }
@@ -84,17 +90,16 @@ int gemm_benchmark(std::size_t n) {
         hpc::GemmAlgo::Tiled, device_a, device_b, device_c, gpu_result.data(),
         cpu_result.data(), size, n);
 
-    const bool register_valid = run_and_validate_gemm(
-        hpc::GemmAlgo::Register, device_a, device_b, device_c,
-        gpu_result.data(), cpu_result.data(), size, n);
+    const bool tiled_v2_valid = run_and_validate_gemm(
+        hpc::GemmAlgo::Tiled_v2, device_a, device_b, device_c, gpu_result.data(),
+        cpu_result.data(), size, n);
 
     const bool cublas_valid = run_and_validate_gemm(
         hpc::GemmAlgo::Cublas, device_a, device_b, device_c, gpu_result.data(),
         cpu_result.data(), size, n);
-
-    return naive_valid && tiled_valid && register_valid && cublas_valid
-               ? EXIT_SUCCESS
-               : EXIT_FAILURE;
+        
+    return naive_valid && tiled_valid && tiled_v2_valid && cublas_valid ? EXIT_SUCCESS
+                                                      : EXIT_FAILURE;
 }
 
 }  // namespace cuda_bench
