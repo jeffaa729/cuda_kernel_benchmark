@@ -7,7 +7,7 @@ namespace hpc {
 enum class GemmAlgo {
     Naive,
     Tiled,
-    Register,
+    Tiled_v2,
     Cublas,
 };
 

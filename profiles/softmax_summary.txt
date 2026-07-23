@@ -1,0 +1,5 @@
+softmax                Kernel                                              Runtime    Speedup       SM %      Mem %     DRAM %    Occupancy %
+--------               ------                                              -------    -------       ----      -----     ------    -----------
+Naive                  <unnamed>::softmax_naive_kernel(const flo...      102400 ns      1.00x      56.79      56.79       4.64          40.00
+SharedMemory           <unnamed>::softmax_shared_memory_kernel(f...       10240 ns     10.00x      57.32      57.32      44.19          84.30
+WarpShuffleRegCache    void <unnamed>::softmax_warpshfl_reg_cach...        7168 ns     14.29x      41.30      59.53      59.53          64.06

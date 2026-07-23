@@ -1,0 +1,5 @@
+transpose              Kernel                                              Runtime    Speedup       SM %      Mem %     DRAM %    Occupancy %
+--------               ------                                              -------    -------       ----      -----     ------    -----------
+Naive                  <unnamed>::transpose_naive_kernel(const f...      113664 ns      1.00x       5.06      67.66      16.42          38.50
+Shared                 <unnamed>::transpose_shared_kernel(const ...       55296 ns      2.06x      15.36      47.73      33.80          63.77
+Padding                <unnamed>::transpose_padding_kernel(const...       34816 ns      3.26x      23.72      52.39      52.39          62.85
