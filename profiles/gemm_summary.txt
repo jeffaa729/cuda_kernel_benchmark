@@ -1,6 +1,7 @@
 gemm                   Kernel                                              Runtime    TFLOP/s    Speedup       SM %      Mem %     DRAM %    Occupancy %
 --------               ------                                              -------    -------    -------       ----      -----     ------    -----------
-Naive                  <unnamed>::gemm_naive_kernel(const float ...       52224 ns      0.643      1.00x      89.89      89.89       4.57          78.47
-Tiled                  <unnamed>::gemm_tiled_kernel(const float ...       41984 ns      0.799      1.24x      83.67      83.67       5.57          79.61
-Tiled                  <unnamed>::gemm_tiled_kernel_v2(const flo...       31264 ns      1.073      1.67x      32.01      32.01       7.67          32.41
-CUBLAS/External        ampere_sgemm_32x32_sliced1x4_nn                    12288 ns      2.731      4.25x      51.28      51.28      19.90          22.21
+CUBLAS/External        ampere_sgemm_64x64_nn                           20525056 ns      6.696     10.57x      73.39      61.52      16.49          32.88
+Naive                  <unnamed>::gemm_naive_kernel(const float ...   217049088 ns      0.633      1.00x      97.95      97.95      35.20          99.90
+Tiled                  <unnamed>::gemm_tiled_kernel(const float ...   163654656 ns      0.840      1.33x      95.99      95.99      46.02          99.92
+Tiled_v2               <unnamed>::gemm_tiled_kernel_v2(const flo...    57990144 ns      2.370      3.74x      76.71      76.71      33.84          66.46
+Tiled_v3               <unnamed>::gemm_tiled_kernel_v3(const flo...    34690048 ns      3.962      6.26x      57.23      79.75      27.97          32.99
