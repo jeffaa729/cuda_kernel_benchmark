@@ -8,9 +8,43 @@
 #include <cstdlib>
 #include <iostream>
 #include <random>
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace {
+
+bool is_known_algorithm(const std::string& algorithm) {
+    return algorithm == "all" || algorithm == "naive" ||
+           algorithm == "tiled" || algorithm == "tiled_v2" ||
+           algorithm == "tiled_v3" || algorithm == "cublas";
+}
+
+std::unordered_set<std::string> selected_algorithms(
+    const std::vector<std::string>& algorithms) {
+    std::unordered_set<std::string> selected;
+    for (const std::string& algorithm : algorithms) {
+        if (!is_known_algorithm(algorithm)) {
+            std::cerr << "Unknown GEMM algorithm: " << algorithm << '\n';
+            std::exit(EXIT_FAILURE);
+        }
+        if (algorithm == "all") {
+            selected.clear();
+            return selected;
+        }
+        selected.insert(algorithm);
+    }
+
+    if (!selected.empty()) {
+        selected.insert("cublas");
+    }
+    return selected;
+}
+
+bool should_run(const std::unordered_set<std::string>& selected,
+                hpc::GemmAlgo algo) {
+    return selected.empty() || selected.count(hpc::to_string(algo)) > 0;
+}
 
 CUDA_BENCH_NOINLINE void gemm_cpu(const float* a, const float* b, float* c,
                                   std::size_t n) {
@@ -61,7 +95,11 @@ bool run_and_validate_gemm(hpc::GemmAlgo algo,
 
 }  // namespace
 
-int gemm_benchmark(std::size_t n) {
+int gemm_benchmark(std::size_t n,
+                   const std::vector<std::string>& algorithms) {
+    const std::unordered_set<std::string> selected =
+        selected_algorithms(algorithms);
+
     const std::size_t size = n * n;
 
     std::vector<float> a(size);
@@ -82,24 +120,34 @@ int gemm_benchmark(std::size_t n) {
     device_a.copy_from_host(a.data());
     device_b.copy_from_host(b.data());
 
-    const bool naive_valid = run_and_validate_gemm(
-        hpc::GemmAlgo::Naive, device_a, device_b, device_c, gpu_result.data(),
-        cpu_result.data(), size, n);
+    bool valid = true;
+    if (should_run(selected, hpc::GemmAlgo::Naive)) {
+        valid &= run_and_validate_gemm(
+            hpc::GemmAlgo::Naive, device_a, device_b, device_c,
+            gpu_result.data(), cpu_result.data(), size, n);
+    }
+    if (should_run(selected, hpc::GemmAlgo::Tiled)) {
+        valid &= run_and_validate_gemm(
+            hpc::GemmAlgo::Tiled, device_a, device_b, device_c,
+            gpu_result.data(), cpu_result.data(), size, n);
+    }
+    if (should_run(selected, hpc::GemmAlgo::Tiled_v2)) {
+        valid &= run_and_validate_gemm(
+            hpc::GemmAlgo::Tiled_v2, device_a, device_b, device_c,
+            gpu_result.data(), cpu_result.data(), size, n);
+    }
+    if (should_run(selected, hpc::GemmAlgo::Tiled_v3)) {
+        valid &= run_and_validate_gemm(
+            hpc::GemmAlgo::Tiled_v3, device_a, device_b, device_c,
+            gpu_result.data(), cpu_result.data(), size, n);
+    }
+    if (should_run(selected, hpc::GemmAlgo::Cublas)) {
+        valid &= run_and_validate_gemm(
+            hpc::GemmAlgo::Cublas, device_a, device_b, device_c,
+            gpu_result.data(), cpu_result.data(), size, n);
+    }
 
-    const bool tiled_valid = run_and_validate_gemm(
-        hpc::GemmAlgo::Tiled, device_a, device_b, device_c, gpu_result.data(),
-        cpu_result.data(), size, n);
-
-    const bool tiled_v2_valid = run_and_validate_gemm(
-        hpc::GemmAlgo::Tiled_v2, device_a, device_b, device_c, gpu_result.data(),
-        cpu_result.data(), size, n);
-
-    const bool cublas_valid = run_and_validate_gemm(
-        hpc::GemmAlgo::Cublas, device_a, device_b, device_c, gpu_result.data(),
-        cpu_result.data(), size, n);
-        
-    return naive_valid && tiled_valid && tiled_v2_valid && cublas_valid ? EXIT_SUCCESS
-                                                      : EXIT_FAILURE;
+    return valid ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
 }  // namespace cuda_bench

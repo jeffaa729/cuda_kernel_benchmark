@@ -15,6 +15,14 @@ constexpr int BK = 8; // K depth per tile
 constexpr int TM = 8; // rows of C per thread
 constexpr int THREADS = BM * BN / TM;
 
+// Constants for tiled_v3 kernel
+constexpr int BM_V3 = 128; // rows of C per block
+constexpr int BN_V3 = 128; // cols of C per block
+constexpr int BK_V3 = 16; // K depth per tile
+constexpr int TM_V3 = 8; // rows of C per thread
+constexpr int TN_V3 = 8; // cols of C per thread
+constexpr int THREADS_V3 = BM_V3 * BN_V3 / (TM_V3 * TN_V3);
+
 void cublas_check(cublasStatus_t status) {
     if (status != CUBLAS_STATUS_SUCCESS) {
         throw std::runtime_error("cuBLAS call failed");
@@ -143,6 +151,109 @@ void launch_gemm_tiled_v2(const float* a, const float* b, float* c, int N) {
     gemm_tiled_kernel_v2<<<blocks, threads>>>(a, b, c, N);
 }
 
+// Tiled kernel + 2D thread tiling :
+__global__ void gemm_tiled_kernel_v3(const float* a, const float* b, float* c, int N) {
+    static_assert(BM_V3 % TM_V3 == 0);
+    static_assert(BN_V3 % TN_V3 == 0);
+    static_assert(BM_V3 * BK_V3 % THREADS_V3 == 0);
+    static_assert(BK_V3 * BN_V3 % THREADS_V3 == 0);
+
+    const int tid = threadIdx.x;
+
+    // Each thread owns one 8x8 tile inside the 128x128 block tile of C.
+    const int thread_tile_col = tid % (BN_V3 / TN_V3);
+    const int thread_tile_row = tid / (BN_V3 / TN_V3);
+    const int local_row_base = thread_tile_row * TM_V3;
+    const int local_col_base = thread_tile_col * TN_V3;
+    const int global_row_base = blockIdx.y * BM_V3 + local_row_base;
+    const int global_col_base = blockIdx.x * BN_V3 + local_col_base;
+
+    /*
+    so the thread tid computes one small 8x8 matrix:
+    C[global_row_base + 0 : global_row_base + 7,
+      global_col_base + 0 : global_col_base + 7]
+    */
+    float acc[TM_V3][TN_V3] = {0.0f}; // accumulate 64 values of C for this thread
+    float a_reg[TM_V3]; // cache 8 values of A from shared memory into registers
+    float b_reg[TN_V3]; // cache 8 values of B from shared memory into registers
+
+    // shared memory for A and B tiles
+    // each K phase loads A[128x16] and B[16x128], then computes a 128x128 C tile
+    __shared__ float As[BM_V3][BK_V3];
+    __shared__ float Bs[BK_V3][BN_V3];
+
+    // wrap the load / compute
+    for (int tile_k = 0; tile_k < (N + BK_V3 - 1) / BK_V3; tile_k++) {
+        // Load A tile. Since BM_V3*BK_V3 = 2048 and THREADS_V3 = 256,
+        // each thread loads multiple A elements with a stride loop.
+        for (int idx = tid; idx < BM_V3 * BK_V3; idx += THREADS_V3) {
+            const int a_local_row = idx / BK_V3;
+            const int a_local_col = idx % BK_V3;
+            const int a_global_row = blockIdx.y * BM_V3 + a_local_row;
+            const int a_global_col = tile_k * BK_V3 + a_local_col;
+
+            As[a_local_row][a_local_col] =
+                (a_global_row < N && a_global_col < N)
+                    ? a[a_global_row * N + a_global_col]
+                    : 0.0f;
+        }
+
+        // Load B tile. Since BK_V3*BN_V3 = 2048 and THREADS_V3 = 256,
+        // each thread also loads multiple B elements with a stride loop.
+        for (int idx = tid; idx < BK_V3 * BN_V3; idx += THREADS_V3) {
+            const int b_local_row = idx / BN_V3;
+            const int b_local_col = idx % BN_V3;
+            const int b_global_row = tile_k * BK_V3 + b_local_row;
+            const int b_global_col = blockIdx.x * BN_V3 + b_local_col;
+
+            Bs[b_local_row][b_local_col] =
+                (b_global_row < N && b_global_col < N)
+                    ? b[b_global_row * N + b_global_col]
+                    : 0.0f;
+        }
+        __syncthreads();
+
+        // Compute using register reuse. For each k inside the tile, cache
+        // 8 A values and 8 B values, then compute an 8x8 outer product.
+        for (int k = 0; k < BK_V3; k++) {
+            for (int i = 0; i < TM_V3; i++) {
+                a_reg[i] = As[local_row_base + i][k];
+            }
+            for (int j = 0; j < TN_V3; j++) {
+                b_reg[j] = Bs[k][local_col_base + j];
+            }
+
+            for (int i = 0; i < TM_V3; i++) {
+                for (int j = 0; j < TN_V3; j++) {
+                    acc[i][j] += a_reg[i] * b_reg[j];
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    // Write the 8x8 thread tile back to global memory.
+    for (int i = 0; i < TM_V3; i++) {
+        const int global_row = global_row_base + i;
+        if (global_row >= N) {
+            continue;
+        }
+        for (int j = 0; j < TN_V3; j++) {
+            const int global_col = global_col_base + j;
+            if (global_col < N) {
+                c[global_row * N + global_col] = acc[i][j];
+            }
+        }
+    }
+}
+
+void launch_gemm_tiled_v3(const float* a, const float* b, float* c, int N) {
+    const dim3 threads(THREADS_V3);
+    const dim3 blocks((N + BN_V3 - 1) / BN_V3,
+                      (N + BM_V3 - 1) / BM_V3);
+    gemm_tiled_kernel_v3<<<blocks, threads>>>(a, b, c, N);
+}
+
 void launch_gemm_cublas(const float* a, const float* b, float* c, int N) {
     cublasHandle_t handle;
     cublas_check(cublasCreate(&handle));
@@ -167,6 +278,8 @@ const char* to_string(GemmAlgo algo) {
             return "tiled";
         case GemmAlgo::Tiled_v2:
             return "tiled_v2";
+        case GemmAlgo::Tiled_v3:
+            return "tiled_v3";
         case GemmAlgo::Cublas:
             return "cublas";
     }
@@ -183,6 +296,9 @@ void gemm(const float* a, const float* b, float* c, int N, GemmAlgo algo) {
             return;
         case GemmAlgo::Tiled_v2:
             launch_gemm_tiled_v2(a, b, c, N);
+            return;
+        case GemmAlgo::Tiled_v3:
+            launch_gemm_tiled_v3(a, b, c, N);
             return;
         case GemmAlgo::Cublas:
             launch_gemm_cublas(a, b, c, N);
