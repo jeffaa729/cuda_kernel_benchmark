@@ -210,6 +210,7 @@ summarize_csv() {
         if (lower ~ /reduction.*address/) return "Address"
         if (lower ~ /gemm.*naive/) return "Naive"
         if (lower ~ /gemm.*tiled/) return "Tiled"
+        if (lower ~ /gemm.*register/) return "Register"
         if (lower ~ /cublas|sgemm|gemm/) return "CUBLAS/External"
         if (lower ~ /softmax.*naive/) return "Naive"
         if (lower ~ /softmax.*shared_memory/) return "SharedMemory"

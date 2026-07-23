@@ -1,5 +1,6 @@
 #pragma once
 
+#include <hpc/conv2d.hpp>
 #include <hpc/gemm.hpp>
 #include <hpc/reduction.hpp>
 #include <hpc/softmax.hpp>
