@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -106,10 +107,25 @@ void print_usage(const char* program) {
               << "  " << program << " vector_add [elements]\n"
               << "  " << program << " transpose [n]\n"
               << "  " << program << " reduction [elements]\n"
-              << "  " << program << " gemm [n]\n"
+              << "  " << program
+              << " gemm [n] [naive|tiled|tiled_v2|tiled_v3|cublas]...\n"
               << "  " << program << " softmax [rows] [cols]\n"
               << "  " << program
               << " conv2d [batch] [c_in] [height] [width] [c_out]\n";
+}
+
+bool is_positive_size_text(const char* text) {
+    if (text == nullptr || *text == '\0') {
+        return false;
+    }
+
+    for (const char* current = text; *current != '\0'; ++current) {
+        if (*current < '0' || *current > '9') {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 }  // namespace
@@ -156,9 +172,18 @@ int main(int argc, char** argv) {
     }
 
     if (benchmark == "gemm") {
-        const std::size_t n =
-            argc > 2 ? cuda_bench::parse_positive_size(argv[2], "n") : 512;
-        return cuda_bench::gemm_benchmark(n);
+        std::size_t n = 512;
+        int algo_start = 2;
+        if (argc > 2 && is_positive_size_text(argv[2])) {
+            n = cuda_bench::parse_positive_size(argv[2], "n");
+            algo_start = 3;
+        }
+
+        std::vector<std::string> algorithms;
+        for (int i = algo_start; i < argc; ++i) {
+            algorithms.emplace_back(argv[i]);
+        }
+        return cuda_bench::gemm_benchmark(n, algorithms);
     }
 
     if (benchmark == "softmax") {

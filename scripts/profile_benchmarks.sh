@@ -14,13 +14,15 @@ Benchmarks:
   vector_add    [elements]
   transpose     [n]
   reduction     [elements]
-  gemm          [n]
+  gemm          [n] [naive|tiled|tiled_v2|tiled_v3|cublas]...
   softmax       [rows] [cols]
   conv2d        [batch] [c_in] [height] [width] [c_out]
 
 Examples:
   scripts/profile_benchmarks.sh
   scripts/profile_benchmarks.sh gemm 512
+  scripts/profile_benchmarks.sh gemm tiled tiled_v2
+  scripts/profile_benchmarks.sh gemm 1024 tiled_v3
   scripts/profile_benchmarks.sh summarize gemm profiles/gemm.csv 512
 EOF
 }
@@ -54,7 +56,7 @@ default_args_for() {
         vector_add) echo "1048576" ;;
         transpose) echo "1024" ;;
         reduction) echo "1048576" ;;
-        gemm) echo "256" ;;
+        gemm) echo "2048" ;;
         softmax) echo "512 512" ;;
         conv2d) echo "8 8 32 32 16" ;;
         *) return 1 ;;
@@ -103,6 +105,56 @@ flop_count_for() {
     esac
 }
 
+is_positive_integer() {
+    [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
+}
+
+gemm_run_args() {
+    local args=("$@")
+    local defaults
+    read -r -a defaults <<<"$(default_args_for gemm)"
+
+    if [[ ${#args[@]} -eq 0 ]]; then
+        printf '%s\n' "${defaults[@]}"
+    elif is_positive_integer "${args[0]}"; then
+        printf '%s\n' "${args[@]}"
+    else
+        printf '%s\n' "${defaults[0]}" "${args[@]}"
+    fi
+}
+
+benchmark_run_args() {
+    local name="$1"
+    shift
+    local args=("$@")
+
+    if [[ "$name" == "gemm" ]]; then
+        gemm_run_args "${args[@]}"
+    elif [[ ${#args[@]} -eq 0 ]]; then
+        default_args_for "$name" | tr ' ' '\n'
+    else
+        printf '%s\n' "${args[@]}"
+    fi
+}
+
+numeric_benchmark_args() {
+    local name="$1"
+    shift
+    local args=("$@")
+
+    if [[ "$name" == "gemm" ]]; then
+        if [[ ${#args[@]} -gt 0 ]] && is_positive_integer "${args[0]}"; then
+            printf '%s\n' "${args[0]}"
+        else
+            default_args_for "$name" | tr ' ' '\n'
+        fi
+    elif [[ ${#args[@]} -eq 0 ]]; then
+        default_args_for "$name" | tr ' ' '\n'
+    else
+        printf '%s\n' "${args[@]}"
+    fi
+}
+
 known_benchmark() {
     case "$1" in
         vector_add|transpose|reduction|gemm|softmax|conv2d) return 0 ;;
@@ -127,20 +179,21 @@ profile_one() {
         exit 1
     fi
 
-    if [[ ${#args[@]} -eq 0 ]]; then
-        read -r -a args <<<"$(default_args_for "$name")"
-    fi
+    local run_args=()
+    local numeric_args=()
+    mapfile -t run_args < <(benchmark_run_args "$name" "${args[@]}")
+    mapfile -t numeric_args < <(numeric_benchmark_args "$name" "${run_args[@]}")
 
     local base="${OUT_DIR}/${name}"
     local report="${base}.ncu-rep"
     local csv="${base}.csv"
     local summary="${base}_summary.txt"
     local flops
-    flops="$(flop_count_for "$name" "${args[@]}")"
+    flops="$(flop_count_for "$name" "${numeric_args[@]}")"
 
     if [[ "$VERBOSE" == "1" ]]; then
         echo
-        echo "== Profiling ${name} ${args[*]} =="
+        echo "== Profiling ${name} ${run_args[*]} =="
         echo "report:  $report"
         echo "csv:     $csv"
         echo "summary: $summary"
@@ -161,7 +214,7 @@ profile_one() {
         --csv \
         --page raw \
         --log-file "$csv" \
-        "$BIN" "$name" "${args[@]}"
+        "$BIN" "$name" "${run_args[@]}"
 
     summarize_csv "$name" "$csv" "$flops" | tee "$summary"
 }
@@ -209,8 +262,9 @@ summarize_csv() {
         if (lower ~ /reduction.*interleave/) return "Interleave"
         if (lower ~ /reduction.*address/) return "Address"
         if (lower ~ /gemm.*naive/) return "Naive"
+        if (lower ~ /gemm.*tiled_kernel_v3/) return "Tiled_v3"
+        if (lower ~ /gemm.*tiled_kernel_v2/) return "Tiled_v2"
         if (lower ~ /gemm.*tiled/) return "Tiled"
-        if (lower ~ /gemm.*register/) return "Register"
         if (lower ~ /cublas|sgemm|gemm/) return "CUBLAS/External"
         if (lower ~ /softmax.*naive/) return "Naive"
         if (lower ~ /softmax.*shared_memory/) return "SharedMemory"
@@ -397,7 +451,8 @@ elif [[ "$bench" == "summarize" ]]; then
     summary_bench="$1"
     summary_csv="$2"
     shift 2
-    summary_flops="$(flop_count_for "$summary_bench" "$@")"
+    mapfile -t summary_numeric_args < <(numeric_benchmark_args "$summary_bench" "$@")
+    summary_flops="$(flop_count_for "$summary_bench" "${summary_numeric_args[@]}")"
     summarize_csv "$summary_bench" "$summary_csv" "$summary_flops"
 elif known_benchmark "$bench"; then
     profile_one "$bench" "$@"
