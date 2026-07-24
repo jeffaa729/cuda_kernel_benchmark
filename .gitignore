@@ -13,3 +13,4 @@ cuda-repo-wsl-ubuntu-13-3-local_13.3.1-1_amd64.deb
 /profiles
 *.csv
 *.txt
+/profiles
