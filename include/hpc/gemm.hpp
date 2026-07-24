@@ -9,6 +9,7 @@ enum class GemmAlgo {
     Tiled,
     Tiled_v2,
     Tiled_v3,
+    Tiled_v4,
     Cublas,
 };
 

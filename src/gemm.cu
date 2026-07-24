@@ -23,6 +23,15 @@ constexpr int TM_V3 = 8; // rows of C per thread
 constexpr int TN_V3 = 8; // cols of C per thread
 constexpr int THREADS_V3 = BM_V3 * BN_V3 / (TM_V3 * TN_V3);
 
+// Constants for tiled_v4 kernel
+constexpr int BM_V4 = 128; // rows of C per block
+constexpr int BN_V4 = 128; // cols of C per block
+constexpr int BK_V4 = 16;  // K tile depth
+constexpr int TM_V4 = 8;   // rows per thread
+constexpr int TN_V4 = 8;   // cols per thread
+constexpr int THREADS_V4 = BM_V4 * BN_V4 / (TM_V4 * TN_V4);
+constexpr int VEC = 4;     // float4 = 4 floats, vectorized load/store
+
 void cublas_check(cublasStatus_t status) {
     if (status != CUBLAS_STATUS_SUCCESS) {
         throw std::runtime_error("cuBLAS call failed");
@@ -254,6 +263,160 @@ void launch_gemm_tiled_v3(const float* a, const float* b, float* c, int N) {
     gemm_tiled_kernel_v3<<<blocks, threads>>>(a, b, c, N);
 }
 
+// Tiled kernel + 2D thread tiling + vectorized memory access :
+__global__ void gemm_tiled_kernel_v4(const float* a, const float* b, float* c,
+                                     int N) {
+    static_assert(BK_V4 % VEC == 0);
+    static_assert(BN_V4 % VEC == 0);
+    static_assert(TN_V4 % VEC == 0);
+    static_assert(BM_V4 % TM_V4 == 0);
+    static_assert(BN_V4 % TN_V4 == 0);
+    static_assert(BM_V4 * (BK_V4 / VEC) % THREADS_V4 == 0);
+    static_assert(BK_V4 * (BN_V4 / VEC) % THREADS_V4 == 0);
+
+    // A is stored transposed in shared memory. The global A tile is
+    // A[128][16], but shared memory stores it as AsT[16][128].
+    // This makes each thread read its 8 A values from a contiguous row.
+    __shared__ float AsT[BK_V4][BM_V4];
+    __shared__ float Bs[BK_V4][BN_V4];
+
+    const int tid = threadIdx.x;
+    const int thread_tile_col = tid % (BN_V4 / TN_V4);
+    const int thread_tile_row = tid / (BN_V4 / TN_V4);
+    const int local_row_base = thread_tile_row * TM_V4;
+    const int local_col_base = thread_tile_col * TN_V4;
+    const int global_row_base = blockIdx.y * BM_V4 + local_row_base;
+    const int global_col_base = blockIdx.x * BN_V4 + local_col_base;
+
+    // Each thread computes an 8x8 tile of C:
+    // C[global_row_base + 0 : global_row_base + 7,
+    //   global_col_base + 0 : global_col_base + 7]
+    float acc[TM_V4][TN_V4] = {0.0f};
+    float a_reg[TM_V4];
+    float b_reg[TN_V4];
+
+    // Wrap the load / compute over K tiles.
+    for (int tile_k = 0; tile_k < (N + BK_V4 - 1) / BK_V4; tile_k++) {
+        // Load A tile. A[128][16] has 2048 floats. With float4, this is
+        // 512 vector loads, so 256 threads each load two vectors.
+        for (int idx = tid; idx < BM_V4 * (BK_V4 / VEC); idx += THREADS_V4) {
+            const int a_local_row = idx / (BK_V4 / VEC);
+            const int a_local_col_vec = idx % (BK_V4 / VEC);
+            const int a_local_col = a_local_col_vec * VEC;
+            const int a_global_row = blockIdx.y * BM_V4 + a_local_row;
+            const int a_global_col = tile_k * BK_V4 + a_local_col;
+            const int a_global_idx = a_global_row * N + a_global_col;
+
+            float vals[VEC] = {};
+            if (a_global_row < N && a_global_col + VEC - 1 < N &&
+                a_global_idx % VEC == 0) {
+                const float4 v =
+                    *reinterpret_cast<const float4*>(&a[a_global_idx]);
+                vals[0] = v.x;
+                vals[1] = v.y;
+                vals[2] = v.z;
+                vals[3] = v.w;
+            } else {
+                for (int x = 0; x < VEC; x++) {
+                    if (a_global_row < N && a_global_col + x < N) {
+                        vals[x] = a[a_global_idx + x];
+                    }
+                }
+            }
+
+            // Store A transposed: AsT[k][row].
+            for (int x = 0; x < VEC; x++) {
+                AsT[a_local_col + x][a_local_row] = vals[x];
+            }
+        }
+
+        // Load B tile. B[16][128] also has 2048 floats, so we use the same
+        // float4 loading pattern and keep B in normal row-major shared layout.
+        for (int idx = tid; idx < BK_V4 * (BN_V4 / VEC); idx += THREADS_V4) {
+            const int b_local_row = idx / (BN_V4 / VEC);
+            const int b_local_col_vec = idx % (BN_V4 / VEC);
+            const int b_local_col = b_local_col_vec * VEC;
+            const int b_global_row = tile_k * BK_V4 + b_local_row;
+            const int b_global_col = blockIdx.x * BN_V4 + b_local_col;
+            const int b_global_idx = b_global_row * N + b_global_col;
+
+            float4 v = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            if (b_global_row < N && b_global_col + VEC - 1 < N &&
+                b_global_idx % VEC == 0) {
+                v = *reinterpret_cast<const float4*>(&b[b_global_idx]);
+            } else {
+                float vals[VEC] = {};
+                for (int x = 0; x < VEC; x++) {
+                    if (b_global_row < N && b_global_col + x < N) {
+                        vals[x] = b[b_global_idx + x];
+                    }
+                }
+                v = make_float4(vals[0], vals[1], vals[2], vals[3]);
+            }
+
+            *reinterpret_cast<float4*>(&Bs[b_local_row][b_local_col]) = v;
+        }
+        __syncthreads();
+
+        // Compute using register reuse. For each k, load 8 A values and
+        // 8 B values into registers, then do the 8x8 outer product.
+        for (int k = 0; k < BK_V4; k++) {
+            for (int i = 0; i < TM_V4; i++) {
+                a_reg[i] = AsT[k][local_row_base + i];
+            }
+
+            for (int jv = 0; jv < TN_V4 / VEC; jv++) {
+                const float4 v = *reinterpret_cast<const float4*>(
+                    &Bs[k][local_col_base + jv * VEC]);
+                b_reg[jv * VEC + 0] = v.x;
+                b_reg[jv * VEC + 1] = v.y;
+                b_reg[jv * VEC + 2] = v.z;
+                b_reg[jv * VEC + 3] = v.w;
+            }
+
+            for (int i = 0; i < TM_V4; i++) {
+                for (int j = 0; j < TN_V4; j++) {
+                    acc[i][j] += a_reg[i] * b_reg[j];
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    // Vectorized write of the 8x8 thread tile back to C.
+    for (int i = 0; i < TM_V4; i++) {
+        const int global_row = global_row_base + i;
+        if (global_row >= N) {
+            continue;
+        }
+
+        for (int jv = 0; jv < TN_V4 / VEC; jv++) {
+            const int global_col = global_col_base + jv * VEC;
+            const int global_idx = global_row * N + global_col;
+
+            if (global_col + VEC - 1 < N && global_idx % VEC == 0) {
+                const float4 v =
+                    make_float4(acc[i][jv * VEC + 0], acc[i][jv * VEC + 1],
+                                acc[i][jv * VEC + 2], acc[i][jv * VEC + 3]);
+                *reinterpret_cast<float4*>(&c[global_idx]) = v;
+            } else {
+                for (int x = 0; x < VEC; x++) {
+                    if (global_col + x < N) {
+                        c[global_idx + x] = acc[i][jv * VEC + x];
+                    }
+                }
+            }
+        }
+    }
+}
+
+void launch_gemm_tiled_v4(const float* a, const float* b, float* c, int N) {
+    const dim3 threads(THREADS_V4);
+    const dim3 blocks((N + BN_V4 - 1) / BN_V4,
+                      (N + BM_V4 - 1) / BM_V4);
+    gemm_tiled_kernel_v4<<<blocks, threads>>>(a, b, c, N);
+}
+
 void launch_gemm_cublas(const float* a, const float* b, float* c, int N) {
     cublasHandle_t handle;
     cublas_check(cublasCreate(&handle));
@@ -280,6 +443,8 @@ const char* to_string(GemmAlgo algo) {
             return "tiled_v2";
         case GemmAlgo::Tiled_v3:
             return "tiled_v3";
+        case GemmAlgo::Tiled_v4:
+            return "tiled_v4";
         case GemmAlgo::Cublas:
             return "cublas";
     }
@@ -299,6 +464,9 @@ void gemm(const float* a, const float* b, float* c, int N, GemmAlgo algo) {
             return;
         case GemmAlgo::Tiled_v3:
             launch_gemm_tiled_v3(a, b, c, N);
+            return;
+        case GemmAlgo::Tiled_v4:
+            launch_gemm_tiled_v4(a, b, c, N);
             return;
         case GemmAlgo::Cublas:
             launch_gemm_cublas(a, b, c, N);
