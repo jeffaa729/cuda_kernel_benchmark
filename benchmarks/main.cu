@@ -108,7 +108,7 @@ void print_usage(const char* program) {
               << "  " << program << " transpose [n]\n"
               << "  " << program << " reduction [elements]\n"
               << "  " << program
-              << " gemm [n] [naive|tiled|tiled_v2|tiled_v3|tiled_v4|cublas]...\n"
+              << " gemm [n] [naive|tiled|tiled_v2|tiled_v3|tiled_v4|tiled_v5|cublas]...\n"
               << "  " << program << " softmax [rows] [cols]\n"
               << "  " << program
               << " conv2d [batch] [c_in] [height] [width] [c_out]\n";
