@@ -18,7 +18,7 @@ bool is_known_algorithm(const std::string& algorithm) {
     return algorithm == "all" || algorithm == "naive" ||
            algorithm == "tiled" || algorithm == "tiled_v2" ||
            algorithm == "tiled_v3" || algorithm == "tiled_v4" ||
-           algorithm == "cublas";
+           algorithm == "tiled_v5" || algorithm == "cublas";
 }
 
 std::unordered_set<std::string> selected_algorithms(
@@ -137,6 +137,11 @@ int gemm_benchmark(std::size_t n,
     if (should_run(selected, hpc::GemmAlgo::Tiled_v4)) {
         valid &= run_and_validate_gemm(
             hpc::GemmAlgo::Tiled_v4, device_a, device_b, device_c,
+            gpu_result.data(), reference_result.data(), size, n);
+    }
+    if (should_run(selected, hpc::GemmAlgo::Tiled_v5)) {
+        valid &= run_and_validate_gemm(
+            hpc::GemmAlgo::Tiled_v5, device_a, device_b, device_c,
             gpu_result.data(), reference_result.data(), size, n);
     }
     if (should_run(selected, hpc::GemmAlgo::Cublas)) {

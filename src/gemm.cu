@@ -32,6 +32,24 @@ constexpr int TN_V4 = 8;   // cols per thread
 constexpr int THREADS_V4 = BM_V4 * BN_V4 / (TM_V4 * TN_V4);
 constexpr int VEC = 4;     // float4 = 4 floats, vectorized load/store
 
+// constants for tiled_v5 kernel
+constexpr int BM_V5 = 128; // rows of C per block
+constexpr int BN_V5 = 128; // cols of C per block
+constexpr int BK_V5 = 16;  // K tile depth
+constexpr int WM_V5 = 64;  // rows of C per warp
+constexpr int WN_V5 = 32;  // cols of C per warp
+
+constexpr int WARPS_M_V5 = BM_V5 / WM_V5; // 2
+constexpr int WARPS_N_V5 = BN_V5 / WN_V5; // 4
+constexpr int WARPS_V5 = WARPS_M_V5 * WARPS_N_V5; // 8
+constexpr int THREADS_V5 = WARPS_V5 * 32; // 256
+
+constexpr int TM_V5 = 8; // rows per thread
+constexpr int TN_V5 = 8; // cols per thread
+
+constexpr int WARP_THREADS_M_V5 = 8;
+constexpr int WARP_THREADS_N_V5 = 4;
+
 void cublas_check(cublasStatus_t status) {
     if (status != CUBLAS_STATUS_SUCCESS) {
         throw std::runtime_error("cuBLAS call failed");
@@ -417,6 +435,174 @@ void launch_gemm_tiled_v4(const float* a, const float* b, float* c, int N) {
     gemm_tiled_kernel_v4<<<blocks, threads>>>(a, b, c, N);
 }
 
+// Tiled kernel + 2D warp tiling + 2D thread tiling + vectorized memory access.
+__global__ void gemm_tiled_kernel_v5(const float* a, const float* b, float* c,
+                                     int N) {
+    static_assert(BK_V5 % VEC == 0);
+    static_assert(BN_V5 % VEC == 0);
+    static_assert(TN_V5 % VEC == 0);
+    static_assert(BM_V5 % WM_V5 == 0);
+    static_assert(BN_V5 % WN_V5 == 0);
+    static_assert(WARP_THREADS_M_V5 * WARP_THREADS_N_V5 == 32);
+    static_assert(WM_V5 == WARP_THREADS_M_V5 * TM_V5);
+    static_assert(WN_V5 == WARP_THREADS_N_V5 * TN_V5);
+    static_assert(BM_V5 * (BK_V5 / VEC) % THREADS_V5 == 0);
+    static_assert(BK_V5 * (BN_V5 / VEC) % THREADS_V5 == 0);
+
+    // Cache one block tile of A and B in shared memory.
+    // A is transposed from A[128][16] to AsT[16][128], so each thread can
+    // read its 8 A values as AsT[k][row + i].
+    __shared__ float AsT[BK_V5][BM_V5];
+    __shared__ float Bs[BK_V5][BN_V5];
+
+    const int tid = threadIdx.x;
+    const int warp_id = tid / 32;
+    const int lane_id = tid % 32;
+
+    // Step 1: choose which 64x32 warp tile this warp owns inside the
+    // 128x128 block tile. There are 2 warp rows and 4 warp columns.
+    const int warp_col = warp_id % WARPS_N_V5;
+    const int warp_row = warp_id / WARPS_N_V5;
+
+    // Step 2: arrange the 32 lanes as an 8x4 grid inside the warp tile.
+    // Each lane owns one 8x8 thread tile, so the warp covers 64x32.
+    const int lane_row = lane_id / WARP_THREADS_N_V5;
+    const int lane_col = lane_id % WARP_THREADS_N_V5;
+
+    // Step 3: convert warp/lane coordinates into this thread's local and
+    // global C tile coordinates.
+    const int warp_tile_row_base = warp_row * WM_V5;
+    const int warp_tile_col_base = warp_col * WN_V5;
+    const int local_row_base = warp_tile_row_base + lane_row * TM_V5;
+    const int local_col_base = warp_tile_col_base + lane_col * TN_V5;
+    const int global_row_base = blockIdx.y * BM_V5 + local_row_base;
+    const int global_col_base = blockIdx.x * BN_V5 + local_col_base;
+
+    // Step 4: keep this thread's 8x8 output tile in registers until all
+    // K tiles are accumulated.
+    float acc[TM_V5][TN_V5] = {0.0f};
+    float a_reg[TM_V5];
+    float b_reg[TN_V5];
+
+    // Step 5: walk over K in 16-wide chunks. Each chunk computes
+    // C_block += A_block[128x16] * B_block[16x128].
+    for (int tile_k = 0; tile_k < (N + BK_V5 - 1) / BK_V5; tile_k++) {
+        // Load A tile with float4. Each block needs 128*16 floats, or
+        // 512 vector loads, so 256 threads each load two vectors.
+        for (int idx = tid; idx < BM_V5 * (BK_V5 / VEC); idx += THREADS_V5) {
+            const int a_local_row = idx / (BK_V5 / VEC);
+            const int a_local_col_vec = idx % (BK_V5 / VEC);
+            const int a_local_col = a_local_col_vec * VEC;
+            const int a_global_row = blockIdx.y * BM_V5 + a_local_row;
+            const int a_global_col = tile_k * BK_V5 + a_local_col;
+            const int a_global_idx = a_global_row * N + a_global_col;
+
+            float vals[VEC] = {};
+            if (a_global_row < N && a_global_col + VEC - 1 < N &&
+                a_global_idx % VEC == 0) {
+                const float4 v =
+                    *reinterpret_cast<const float4*>(&a[a_global_idx]);
+                vals[0] = v.x;
+                vals[1] = v.y;
+                vals[2] = v.z;
+                vals[3] = v.w;
+            } else {
+                for (int x = 0; x < VEC; x++) {
+                    if (a_global_row < N && a_global_col + x < N) {
+                        vals[x] = a[a_global_idx + x];
+                    }
+                }
+            }
+
+            // Store A transposed: global A[row][k] becomes shared AsT[k][row].
+            for (int x = 0; x < VEC; x++) {
+                AsT[a_local_col + x][a_local_row] = vals[x];
+            }
+        }
+
+        // Load B tile with float4 and keep it in normal row-major layout.
+        for (int idx = tid; idx < BK_V5 * (BN_V5 / VEC); idx += THREADS_V5) {
+            const int b_local_row = idx / (BN_V5 / VEC);
+            const int b_local_col_vec = idx % (BN_V5 / VEC);
+            const int b_local_col = b_local_col_vec * VEC;
+            const int b_global_row = tile_k * BK_V5 + b_local_row;
+            const int b_global_col = blockIdx.x * BN_V5 + b_local_col;
+            const int b_global_idx = b_global_row * N + b_global_col;
+
+            float4 v = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+            if (b_global_row < N && b_global_col + VEC - 1 < N &&
+                b_global_idx % VEC == 0) {
+                v = *reinterpret_cast<const float4*>(&b[b_global_idx]);
+            } else {
+                float vals[VEC] = {};
+                for (int x = 0; x < VEC; x++) {
+                    if (b_global_row < N && b_global_col + x < N) {
+                        vals[x] = b[b_global_idx + x];
+                    }
+                }
+                v = make_float4(vals[0], vals[1], vals[2], vals[3]);
+            }
+            *reinterpret_cast<float4*>(&Bs[b_local_row][b_local_col]) = v;
+        }
+        __syncthreads();
+
+        // Step 6: for each k inside the shared tile, load one 8-value A
+        // fragment and one 8-value B fragment, then accumulate their outer
+        // product into this thread's 8x8 register tile.
+        for (int k = 0; k < BK_V5; k++) {
+            for (int i = 0; i < TM_V5; i++) {
+                a_reg[i] = AsT[k][local_row_base + i];
+            }
+            for (int jv = 0; jv < TN_V5 / VEC; jv++) {
+                const float4 v = *reinterpret_cast<const float4*>(
+                    &Bs[k][local_col_base + jv * VEC]);
+                b_reg[jv * VEC + 0] = v.x;
+                b_reg[jv * VEC + 1] = v.y;
+                b_reg[jv * VEC + 2] = v.z;
+                b_reg[jv * VEC + 3] = v.w;
+            }
+            for (int i = 0; i < TM_V5; i++) {
+                for (int j = 0; j < TN_V5; j++) {
+                    acc[i][j] += a_reg[i] * b_reg[j];
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    // Step 7: write the completed 8x8 thread tile back to global memory.
+    for (int i = 0; i < TM_V5; i++) {
+        const int global_row = global_row_base + i;
+        if (global_row >= N) {
+            continue;
+        }
+        for (int jv = 0; jv < TN_V5 / VEC; jv++) {
+            const int global_col = global_col_base + jv * VEC;
+            const int global_idx = global_row * N + global_col;
+
+            if (global_col + VEC - 1 < N && global_idx % VEC == 0) {
+                const float4 v =
+                    make_float4(acc[i][jv * VEC + 0], acc[i][jv * VEC + 1],
+                                acc[i][jv * VEC + 2], acc[i][jv * VEC + 3]);
+                *reinterpret_cast<float4*>(&c[global_idx]) = v;
+            } else {
+                for (int x = 0; x < VEC; x++) {
+                    if (global_col + x < N) {
+                        c[global_idx + x] = acc[i][jv * VEC + x];
+                    }
+                }
+            }
+        }
+    }
+}
+
+void launch_gemm_tiled_v5(const float* a, const float* b, float* c, int N) {
+    const dim3 threads(THREADS_V5);
+    const dim3 blocks((N + BN_V5 - 1) / BN_V5,
+                      (N + BM_V5 - 1) / BM_V5);
+    gemm_tiled_kernel_v5<<<blocks, threads>>>(a, b, c, N);
+}
+
 void launch_gemm_cublas(const float* a, const float* b, float* c, int N) {
     cublasHandle_t handle;
     cublas_check(cublasCreate(&handle));
@@ -445,6 +631,8 @@ const char* to_string(GemmAlgo algo) {
             return "tiled_v3";
         case GemmAlgo::Tiled_v4:
             return "tiled_v4";
+        case GemmAlgo::Tiled_v5:
+            return "tiled_v5";
         case GemmAlgo::Cublas:
             return "cublas";
     }
@@ -467,6 +655,9 @@ void gemm(const float* a, const float* b, float* c, int N, GemmAlgo algo) {
             return;
         case GemmAlgo::Tiled_v4:
             launch_gemm_tiled_v4(a, b, c, N);
+            return;
+        case GemmAlgo::Tiled_v5:
+            launch_gemm_tiled_v5(a, b, c, N);
             return;
         case GemmAlgo::Cublas:
             launch_gemm_cublas(a, b, c, N);
