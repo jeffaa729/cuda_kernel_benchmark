@@ -763,6 +763,21 @@ void launch_gemm_cublas(const float* a, const float* b, float* c, int N) {
     cublas_check(cublasDestroy(handle));
 }
 
+void launch_gemm_cublas_tensor_core(const float* a, const float* b, float* c,
+                                    int N) {
+    cublasHandle_t handle;
+    cublas_check(cublasCreate(&handle));
+    cublas_check(cublasSetMathMode(handle, CUBLAS_TF32_TENSOR_OP_MATH));
+
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    cublas_check(cublasGemmEx(
+        handle, CUBLAS_OP_N, CUBLAS_OP_N, N, N, N, &alpha, b, CUDA_R_32F, N, a,
+        CUDA_R_32F, N, &beta, c, CUDA_R_32F, N,
+        CUBLAS_COMPUTE_32F_FAST_TF32, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+    cublas_check(cublasDestroy(handle));
+}
+
 }  // namespace
 
 namespace hpc {
@@ -783,6 +798,8 @@ const char* to_string(GemmAlgo algo) {
             return "tiled_v5";
         case GemmAlgo::TensorCore:
             return "tensor_core";
+        case GemmAlgo::CublasTensorCore:
+            return "cublas_tensor_core";
         case GemmAlgo::Cublas:
             return "cublas";
     }
@@ -811,6 +828,9 @@ void gemm(const float* a, const float* b, float* c, int N, GemmAlgo algo) {
             return;
         case GemmAlgo::TensorCore:
             launch_gemm_tensor_core(a, b, c, N);
+            return;
+        case GemmAlgo::CublasTensorCore:
+            launch_gemm_cublas_tensor_core(a, b, c, N);
             return;
         case GemmAlgo::Cublas:
             launch_gemm_cublas(a, b, c, N);
