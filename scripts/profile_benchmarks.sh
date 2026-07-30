@@ -14,7 +14,7 @@ Benchmarks:
   vector_add    [elements]
   transpose     [n]
   reduction     [elements]
-  gemm          [n] [naive|tiled|tiled_v2|tiled_v3|tiled_v4|tiled_v5|cublas]...
+  gemm          [n] [naive|tiled|tiled_v2|tiled_v3|tiled_v4|tiled_v5|tensor_core|cublas]...
   softmax       [rows] [cols]
   conv2d        [batch] [c_in] [height] [width] [c_out]
 
@@ -262,6 +262,7 @@ summarize_csv() {
         if (lower ~ /reduction.*interleave/) return "Interleave"
         if (lower ~ /reduction.*address/) return "Address"
         if (lower ~ /gemm.*naive/) return "Naive"
+        if (lower ~ /gemm.*tensor_core/) return "TensorCore"
         if (lower ~ /gemm.*tiled_kernel_v5/) return "Tiled_v5"
         if (lower ~ /gemm.*tiled_kernel_v4/) return "Tiled_v4"
         if (lower ~ /gemm.*tiled_kernel_v3/) return "Tiled_v3"

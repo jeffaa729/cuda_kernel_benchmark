@@ -18,7 +18,8 @@ bool is_known_algorithm(const std::string& algorithm) {
     return algorithm == "all" || algorithm == "naive" ||
            algorithm == "tiled" || algorithm == "tiled_v2" ||
            algorithm == "tiled_v3" || algorithm == "tiled_v4" ||
-           algorithm == "tiled_v5" || algorithm == "cublas";
+           algorithm == "tiled_v5" || algorithm == "tensor_core" ||
+           algorithm == "cublas";
 }
 
 std::unordered_set<std::string> selected_algorithms(
@@ -66,8 +67,10 @@ bool run_and_validate_gemm(hpc::GemmAlgo algo,
 
     device_c.copy_to_host(gpu_result);
     for (std::size_t i = 0; i < size; ++i) {
+        const float relative_tolerance =
+            algo == hpc::GemmAlgo::TensorCore ? 1.0e-1f : 1.0e-3f;
         const float tolerance =
-            1.0e-3f * std::max(1.0f, std::abs(reference_result[i]));
+            relative_tolerance * std::max(1.0f, std::abs(reference_result[i]));
         if (std::abs(reference_result[i] - gpu_result[i]) > tolerance) {
             std::cerr << "GEMM " << hpc::to_string(algo)
                       << " validation failed at index " << i
@@ -142,6 +145,11 @@ int gemm_benchmark(std::size_t n,
     if (should_run(selected, hpc::GemmAlgo::Tiled_v5)) {
         valid &= run_and_validate_gemm(
             hpc::GemmAlgo::Tiled_v5, device_a, device_b, device_c,
+            gpu_result.data(), reference_result.data(), size, n);
+    }
+    if (should_run(selected, hpc::GemmAlgo::TensorCore)) {
+        valid &= run_and_validate_gemm(
+            hpc::GemmAlgo::TensorCore, device_a, device_b, device_c,
             gpu_result.data(), reference_result.data(), size, n);
     }
     if (should_run(selected, hpc::GemmAlgo::Cublas)) {

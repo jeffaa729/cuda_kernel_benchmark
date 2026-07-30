@@ -2,7 +2,8 @@
 
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
-
+#include <mma.h>
+#include <cuda_fp16.h>
 #include <stdexcept>
 
 namespace {
@@ -49,6 +50,27 @@ constexpr int TN_V5 = 8; // cols per thread
 
 constexpr int WARP_THREADS_M_V5 = 8;
 constexpr int WARP_THREADS_N_V5 = 4;
+
+//Tensor core kernel constants
+constexpr int BM_TC = 128;
+constexpr int BN_TC = 128;
+constexpr int BK_TC = 16;
+
+constexpr int WM_TC = 64;
+constexpr int WN_TC = 32;
+
+constexpr int WARPS_M_TC = BM_TC / WM_TC; // 2
+constexpr int WARPS_N_TC = BN_TC / WN_TC; // 4
+constexpr int WARPS_TC = WARPS_M_TC * WARPS_N_TC; // 8
+constexpr int THREADS_TC = WARPS_TC * 32; // 256
+
+constexpr int WMMA_M = 16;
+constexpr int WMMA_N = 16;
+constexpr int WMMA_K = 16;
+constexpr int SKEW_TC = 16; //shared-memory skew:
+
+constexpr int WMMA_TILES_M = WM_TC / WMMA_M; // 4
+constexpr int WMMA_TILES_N = WN_TC / WMMA_N; // 2
 
 void cublas_check(cublasStatus_t status) {
     if (status != CUBLAS_STATUS_SUCCESS) {
@@ -603,6 +625,132 @@ void launch_gemm_tiled_v5(const float* a, const float* b, float* c, int N) {
     gemm_tiled_kernel_v5<<<blocks, threads>>>(a, b, c, N);
 }
 
+// 2D block tiling + 2D warp tiling + Tensor Core WMMA.
+// The public GEMM API still takes float matrices. This kernel converts A and B
+// tiles to half in shared memory, uses Tensor Cores, and accumulates to float.
+__global__ void gemm_tensor_core_kernel(const float* a, const float* b,
+                                        float* c, int N) {
+    static_assert(BM_TC % WM_TC == 0);
+    static_assert(BN_TC % WN_TC == 0);
+    static_assert(BK_TC % WMMA_K == 0);
+    static_assert(WM_TC % WMMA_M == 0);
+    static_assert(WN_TC % WMMA_N == 0);
+
+    // A is stored transposed as AsT[k][row]. The extra SKEW columns pad the
+    // leading dimension, which helps avoid shared-memory bank conflicts during
+    // warp-level WMMA fragment loads.
+    __shared__ half AsT[BK_TC][BM_TC + SKEW_TC];
+    __shared__ half Bs[BK_TC][BN_TC + SKEW_TC];
+
+    const int tid = threadIdx.x;
+    const int warp_id = tid / 32;
+    const int warp_col = warp_id % WARPS_N_TC;
+    const int warp_row = warp_id / WARPS_N_TC;
+
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K,
+                           half, nvcuda::wmma::col_major>
+        a_frag[WMMA_TILES_M];
+    nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K,
+                           half, nvcuda::wmma::row_major>
+        b_frag[WMMA_TILES_N];
+    nvcuda::wmma::fragment<nvcuda::wmma::accumulator, WMMA_M, WMMA_N, WMMA_K,
+                           float>
+        acc_frag[WMMA_TILES_M][WMMA_TILES_N];
+
+    // Step 1: each warp owns a 64x32 C tile, split into 4x2 WMMA fragments.
+    for (int mi = 0; mi < WMMA_TILES_M; mi++) {
+        for (int ni = 0; ni < WMMA_TILES_N; ni++) {
+            nvcuda::wmma::fill_fragment(acc_frag[mi][ni], 0.0f);
+        }
+    }
+
+    // Step 2: move through K in 16-wide chunks. Each block loads A[128x16]
+    // and B[16x128], then each warp issues WMMA operations for its C tile.
+    for (int tile_k = 0; tile_k < (N + BK_TC - 1) / BK_TC; tile_k++) {
+        for (int idx = tid; idx < BM_TC * BK_TC; idx += THREADS_TC) {
+            const int a_local_row = idx / BK_TC;
+            const int a_local_col = idx % BK_TC;
+            const int a_global_row = blockIdx.y * BM_TC + a_local_row;
+            const int a_global_col = tile_k * BK_TC + a_local_col;
+
+            float value = 0.0f;
+            if (a_global_row < N && a_global_col < N) {
+                value = a[a_global_row * N + a_global_col];
+            }
+            AsT[a_local_col][a_local_row] = __float2half(value);
+        }
+
+        for (int idx = tid; idx < BK_TC * BN_TC; idx += THREADS_TC) {
+            const int b_local_row = idx / BN_TC;
+            const int b_local_col = idx % BN_TC;
+            const int b_global_row = tile_k * BK_TC + b_local_row;
+            const int b_global_col = blockIdx.x * BN_TC + b_local_col;
+
+            float value = 0.0f;
+            if (b_global_row < N && b_global_col < N) {
+                value = b[b_global_row * N + b_global_col];
+            }
+            Bs[b_local_row][b_local_col] = __float2half(value);
+        }
+        __syncthreads();
+
+        // Step 3: load 16x16 A/B fragments from shared memory and let the
+        // Tensor Core perform acc += A_frag * B_frag at warp level.
+        for (int kk = 0; kk < BK_TC; kk += WMMA_K) {
+            for (int mi = 0; mi < WMMA_TILES_M; mi++) {
+                const int a_row = warp_row * WM_TC + mi * WMMA_M;
+                nvcuda::wmma::load_matrix_sync(
+                    a_frag[mi], &AsT[kk][a_row], BM_TC + SKEW_TC);
+            }
+
+            for (int ni = 0; ni < WMMA_TILES_N; ni++) {
+                const int b_col = warp_col * WN_TC + ni * WMMA_N;
+                nvcuda::wmma::load_matrix_sync(
+                    b_frag[ni], &Bs[kk][b_col], BN_TC + SKEW_TC);
+            }
+
+            for (int mi = 0; mi < WMMA_TILES_M; mi++) {
+                for (int ni = 0; ni < WMMA_TILES_N; ni++) {
+                    nvcuda::wmma::mma_sync(acc_frag[mi][ni], a_frag[mi],
+                                           b_frag[ni], acc_frag[mi][ni]);
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    // Step 4: store each completed 16x16 WMMA accumulator fragment to C.
+    // Partial 16x16 edge fragments are avoided by the launcher fallback.
+    for (int mi = 0; mi < WMMA_TILES_M; mi++) {
+        for (int ni = 0; ni < WMMA_TILES_N; ni++) {
+            const int c_row =
+                blockIdx.y * BM_TC + warp_row * WM_TC + mi * WMMA_M;
+            const int c_col =
+                blockIdx.x * BN_TC + warp_col * WN_TC + ni * WMMA_N;
+
+            if (c_row + WMMA_M <= N && c_col + WMMA_N <= N) {
+                nvcuda::wmma::store_matrix_sync(
+                    &c[c_row * N + c_col], acc_frag[mi][ni], N,
+                    nvcuda::wmma::mem_row_major);
+            }
+        }
+    }
+}
+
+void launch_gemm_tensor_core(const float* a, const float* b, float* c, int N) {
+    // WMMA stores complete 16x16 fragments. For non-multiple-of-16 sizes, use
+    // the v5 FP32 kernel so the public API remains correct for every N.
+    if (N % WMMA_M != 0 || N % WMMA_N != 0 || N % WMMA_K != 0) {
+        launch_gemm_tiled_v5(a, b, c, N);
+        return;
+    }
+
+    const dim3 threads(THREADS_TC);
+    const dim3 blocks((N + BN_TC - 1) / BN_TC,
+                      (N + BM_TC - 1) / BM_TC);
+    gemm_tensor_core_kernel<<<blocks, threads>>>(a, b, c, N);
+}
+
 void launch_gemm_cublas(const float* a, const float* b, float* c, int N) {
     cublasHandle_t handle;
     cublas_check(cublasCreate(&handle));
@@ -633,6 +781,8 @@ const char* to_string(GemmAlgo algo) {
             return "tiled_v4";
         case GemmAlgo::Tiled_v5:
             return "tiled_v5";
+        case GemmAlgo::TensorCore:
+            return "tensor_core";
         case GemmAlgo::Cublas:
             return "cublas";
     }
@@ -658,6 +808,9 @@ void gemm(const float* a, const float* b, float* c, int N, GemmAlgo algo) {
             return;
         case GemmAlgo::Tiled_v5:
             launch_gemm_tiled_v5(a, b, c, N);
+            return;
+        case GemmAlgo::TensorCore:
+            launch_gemm_tensor_core(a, b, c, N);
             return;
         case GemmAlgo::Cublas:
             launch_gemm_cublas(a, b, c, N);
