@@ -12,6 +12,7 @@ enum class GemmAlgo {
     Tiled_v4,
     Tiled_v5,
     TensorCore,
+    CublasTensorCore,
     Cublas,
 };
 
