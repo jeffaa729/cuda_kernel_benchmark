@@ -111,7 +111,16 @@ void print_usage(const char* program) {
               << " gemm [n] [naive|tiled|tiled_v2|tiled_v3|tiled_v4|tiled_v5|tensor_core|cublas_tensor_core|cublas]...\n"
               << "  " << program << " softmax [rows] [cols]\n"
               << "  " << program
-              << " conv2d [batch] [c_in] [height] [width] [c_out]\n";
+              << " conv2d [batch] [c_in] [height] [width] [c_out]\n"
+              << "  " << program << " rmsnorm [rows] [hidden]\n"
+              << "  " << program << " swiglu [elements]\n"
+              << "  " << program << " rope [batch] [sequence] [heads] [head_size] [rotary_size]\n"
+              << "  " << program << " embedding [tokens] [hidden] [vocabulary]\n"
+              << "  " << program << " adamw [elements]\n"
+              << "  " << program << " global_norm [elements]\n"
+              << "  " << program << " cross_entropy [rows] [vocabulary]\n"
+              << "  " << program << " causal_softmax [batch] [heads] [sequence]\n"
+              << "  " << program << " attention [batch] [sequence] [heads] [head_size]\n";
 }
 
 bool is_positive_size_text(const char* text) {
@@ -130,7 +139,7 @@ bool is_positive_size_text(const char* text) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int run_benchmarks(int argc, char** argv) {
     const std::string benchmark = argc > 1 ? argv[1] : "all";
 
     print_device_peak_reference();
@@ -148,6 +157,15 @@ int main(int argc, char** argv) {
         status |= cuda_bench::softmax_benchmark(4096, 1024);
         std::cout << '\n';
         status |= cuda_bench::conv2d_benchmark(64, 16, 16, 16, 32);
+        status |= cuda_bench::rmsnorm_benchmark(128, 512);
+        status |= cuda_bench::swiglu_benchmark(1048576);
+        status |= cuda_bench::rope_benchmark(2, 128, 8, 64, 32);
+        status |= cuda_bench::embedding_benchmark(512, 256, 1024);
+        status |= cuda_bench::adamw_benchmark(1048576);
+        status |= cuda_bench::global_norm_benchmark(1048576);
+        status |= cuda_bench::cross_entropy_benchmark(128, 1024);
+        status |= cuda_bench::causal_softmax_benchmark(2, 4, 128);
+        status |= cuda_bench::attention_benchmark(1, 128, 4, 64);
         return status == EXIT_SUCCESS ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
@@ -208,7 +226,96 @@ int main(int argc, char** argv) {
         return cuda_bench::conv2d_benchmark(batch, c_in, height, width, c_out);
     }
 
+    if (benchmark == "rmsnorm") {
+        const std::size_t rows = argc > 2
+            ? cuda_bench::parse_positive_size(argv[2], "rows") : 128;
+        const std::size_t hidden = argc > 3
+            ? cuda_bench::parse_positive_size(argv[3], "hidden") : 512;
+        return cuda_bench::rmsnorm_benchmark(rows, hidden);
+    }
+
+    if (benchmark == "swiglu") {
+        const std::size_t elements = argc > 2
+            ? cuda_bench::parse_positive_size(argv[2], "elements") : 1048576;
+        return cuda_bench::swiglu_benchmark(elements);
+    }
+
+    if (benchmark == "rope") {
+        const std::size_t batch = argc > 2
+            ? cuda_bench::parse_positive_size(argv[2], "batch") : 2;
+        const std::size_t sequence = argc > 3
+            ? cuda_bench::parse_positive_size(argv[3], "sequence") : 128;
+        const std::size_t heads = argc > 4
+            ? cuda_bench::parse_positive_size(argv[4], "heads") : 8;
+        const std::size_t head_size = argc > 5
+            ? cuda_bench::parse_positive_size(argv[5], "head_size") : 64;
+        const std::size_t rotary_size = argc > 6
+            ? cuda_bench::parse_positive_size(argv[6], "rotary_size") : 32;
+        return cuda_bench::rope_benchmark(batch, sequence, heads, head_size, rotary_size);
+    }
+
+    if (benchmark == "embedding") {
+        const std::size_t tokens = argc > 2
+            ? cuda_bench::parse_positive_size(argv[2], "tokens") : 512;
+        const std::size_t hidden = argc > 3
+            ? cuda_bench::parse_positive_size(argv[3], "hidden") : 256;
+        const std::size_t vocabulary = argc > 4
+            ? cuda_bench::parse_positive_size(argv[4], "vocabulary") : 1024;
+        return cuda_bench::embedding_benchmark(tokens, hidden, vocabulary);
+    }
+
+    if (benchmark == "adamw") {
+        const std::size_t elements = argc > 2
+            ? cuda_bench::parse_positive_size(argv[2], "elements") : 1048576;
+        return cuda_bench::adamw_benchmark(elements);
+    }
+
+    if (benchmark == "global_norm") {
+        const std::size_t elements = argc > 2
+            ? cuda_bench::parse_positive_size(argv[2], "elements") : 1048576;
+        return cuda_bench::global_norm_benchmark(elements);
+    }
+
+    if (benchmark == "cross_entropy") {
+        const std::size_t rows = argc > 2
+            ? cuda_bench::parse_positive_size(argv[2], "rows") : 128;
+        const std::size_t vocabulary = argc > 3
+            ? cuda_bench::parse_positive_size(argv[3], "vocabulary") : 1024;
+        return cuda_bench::cross_entropy_benchmark(rows, vocabulary);
+    }
+
+    if (benchmark == "causal_softmax") {
+        const std::size_t batch = argc > 2
+            ? cuda_bench::parse_positive_size(argv[2], "batch") : 2;
+        const std::size_t heads = argc > 3
+            ? cuda_bench::parse_positive_size(argv[3], "heads") : 4;
+        const std::size_t sequence = argc > 4
+            ? cuda_bench::parse_positive_size(argv[4], "sequence") : 128;
+        return cuda_bench::causal_softmax_benchmark(batch, heads, sequence);
+    }
+
+    if (benchmark == "attention") {
+        const std::size_t batch = argc > 2
+            ? cuda_bench::parse_positive_size(argv[2], "batch") : 1;
+        const std::size_t sequence = argc > 3
+            ? cuda_bench::parse_positive_size(argv[3], "sequence") : 128;
+        const std::size_t heads = argc > 4
+            ? cuda_bench::parse_positive_size(argv[4], "heads") : 4;
+        const std::size_t head_size = argc > 5
+            ? cuda_bench::parse_positive_size(argv[5], "head_size") : 64;
+        return cuda_bench::attention_benchmark(batch, sequence, heads, head_size);
+    }
+
     std::cerr << "Unknown benchmark: " << benchmark << "\n\n";
     print_usage(argv[0]);
     return EXIT_FAILURE;
+}
+
+int main(int argc, char** argv) {
+    try {
+        return run_benchmarks(argc, argv);
+    } catch (const std::exception& error) {
+        std::cerr << "Benchmark failed: " << error.what() << '\n';
+        return EXIT_FAILURE;
+    }
 }

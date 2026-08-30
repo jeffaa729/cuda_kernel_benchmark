@@ -17,6 +17,15 @@ Benchmarks:
   gemm          [n] [naive|tiled|tiled_v2|tiled_v3|tiled_v4|tiled_v5|tensor_core|cublas_tensor_core|cublas]...
   softmax       [rows] [cols]
   conv2d        [batch] [c_in] [height] [width] [c_out]
+  rmsnorm       [rows] [hidden]
+  swiglu        [elements]
+  rope          [batch] [sequence] [heads] [head_size] [rotary_size]
+  embedding     [tokens] [hidden] [vocabulary]
+  adamw         [elements]
+  global_norm   [elements]
+  cross_entropy [rows] [vocabulary]
+  causal_softmax [batch] [heads] [sequence]
+  attention     [batch] [sequence] [heads] [head_size]
 
 Examples:
   scripts/profile_benchmarks.sh
@@ -59,6 +68,15 @@ default_args_for() {
         gemm) echo "2048" ;;
         softmax) echo "512 512" ;;
         conv2d) echo "8 8 32 32 16" ;;
+        rmsnorm) echo "128 512" ;;
+        swiglu) echo "1048576" ;;
+        rope) echo "2 128 8 64 32" ;;
+        embedding) echo "512 256 1024" ;;
+        adamw) echo "1048576" ;;
+        global_norm) echo "1048576" ;;
+        cross_entropy) echo "128 1024" ;;
+        causal_softmax) echo "2 4 128" ;;
+        attention) echo "1 128 4 64" ;;
         *) return 1 ;;
     esac
 }
@@ -157,7 +175,7 @@ numeric_benchmark_args() {
 
 known_benchmark() {
     case "$1" in
-        vector_add|transpose|reduction|gemm|softmax|conv2d) return 0 ;;
+        vector_add|transpose|reduction|gemm|softmax|conv2d|rmsnorm|swiglu|rope|embedding|adamw|global_norm|cross_entropy|causal_softmax|attention) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -206,7 +224,7 @@ profile_one() {
         ncu_collection_args=(--set "$NCU_SET")
     fi
 
-    CUDA_BENCH_DEVICE_INFO=0 "$NCU" \
+    if ! CUDA_BENCH_DEVICE_INFO=0 "$NCU" \
         "${ncu_collection_args[@]}" \
         --target-processes all \
         --force-overwrite \
@@ -214,7 +232,11 @@ profile_one() {
         --csv \
         --page raw \
         --log-file "$csv" \
-        "$BIN" "$name" "${run_args[@]}"
+        "$BIN" "$name" "${run_args[@]}"; then
+        [[ ! -f "$csv" ]] || cat "$csv" >&2
+        echo "error: Nsight Compute could not profile $name" >&2
+        return 1
+    fi
 
     summarize_csv "$name" "$csv" "$flops" | tee "$summary"
 }
@@ -255,7 +277,31 @@ summarize_csv() {
 
     function approach(kernel, lower) {
         lower = tolower(kernel)
+        if (lower ~ /vector_add.*backward/) return "Backward"
+        if (lower ~ /vector_add.*vectorized/) return "Vectorized"
         if (lower ~ /vector_add.*naive/) return "Naive"
+        if (lower ~ /causal_softmax.*backward/) return "Causal backward"
+        if (lower ~ /causal_softmax.*(false|\(bool\)0)/) return "BlockReduce"
+        if (lower ~ /causal_softmax.*forward/) return "Causal forward"
+        if (lower ~ /rmsnorm.*forward/) return "RMSNorm forward"
+        if (lower ~ /rmsnorm.*backward/) return "RMSNorm backward"
+        if (lower ~ /rope.*forward/) return "RoPE forward"
+        if (lower ~ /rope.*backward/) return "RoPE backward"
+        if (lower ~ /swiglu.*forward/) return "SwiGLU forward"
+        if (lower ~ /swiglu.*backward/) return "SwiGLU backward"
+        if (lower ~ /embedding.*forward/) return "Embedding forward"
+        if (lower ~ /embedding.*backward/) return "Embedding backward"
+        if (lower ~ /adamw/) return "AdamW update"
+        if (lower ~ /global_norm.*partial/) return "L2 partial"
+        if (lower ~ /global_norm.*finalize/) return "L2 finalize"
+        if (lower ~ /clip_gradients/) return "Gradient clip"
+        if (lower ~ /cross_entropy.*backward/) return "CrossEntropy backward"
+        if (lower ~ /cross_entropy.*loss|cross_entropy.*mean/) return "CrossEntropy mean"
+        if (lower ~ /cross_entropy/) return "CrossEntropy forward"
+        if (lower ~ /attention_pack_qkv/) return "Pack QKV"
+        if (lower ~ /attention_unpack_output/) return "Unpack output"
+        if (lower ~ /attention_pack_backward/) return "Pack backward"
+        if (lower ~ /attention_unpack_gradients/) return "Unpack gradients"
         if (lower ~ /transpose.*naive/) return "Naive"
         if (lower ~ /transpose.*shared/) return "Shared"
         if (lower ~ /transpose.*padding/) return "Padding"
@@ -403,7 +449,7 @@ summarize_csv() {
             }
 
             speedup = "-"
-            if (naive_runtime_ns > 0 && runtime_ns > 0) {
+            if (naive_runtime_ns > 0 && runtime_ns > 0 && approach(key) != "Backward") {
                 speedup = sprintf("%.2fx", naive_runtime_ns / runtime_ns)
             }
 
@@ -439,7 +485,7 @@ if [[ "$bench" == "all" ]]; then
         exit 1
     fi
     first=1
-    for name in vector_add transpose reduction gemm softmax conv2d; do
+    for name in vector_add transpose reduction gemm softmax conv2d rmsnorm swiglu rope embedding adamw global_norm cross_entropy causal_softmax attention; do
         if [[ "$first" == "0" ]]; then
             echo
         fi

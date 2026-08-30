@@ -1,6 +1,7 @@
 #include <cuda_bench/benchmark.hpp>
 #include <cuda_bench/benchmarks.hpp>
 #include <cuda_bench/cuda_utils.cuh>
+#include <cuda_bench/validation.hpp>
 #include <hpc/vector_add.hpp>
 
 #include <algorithm>
@@ -55,6 +56,27 @@ int vector_add_benchmark(std::size_t size) {
         }
     }
 
+    hpc::vector_add(device_a.data(), device_b.data(), device_c.data(), size,
+                    hpc::VectorAddAlgo::Vectorized);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    valid &= validate_result(device_c, cpu_result, "vectorized add", 0.0F);
+
+    // Residual backward adds the same upstream gradient to both branches.
+    // Only the aligned prefix belongs to this vectorized backward contract.
+    const std::size_t aligned = size - size % 4;
+    std::vector<float> dx(size, 0.25F), db(size, -0.5F);
+    DeviceBuffer<float> device_dx(size), device_db(size);
+    device_dx.copy_from_host(dx.data()); device_db.copy_from_host(db.data());
+    if (aligned) {
+        hpc::vector_add_backward(device_dx.data(), device_db.data(), device_c.data(), aligned);
+    }
+    for (std::size_t i = 0; i < aligned; ++i) {
+        dx[i] += cpu_result[i];
+        db[i] += cpu_result[i];
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+    valid &= validate_result(device_dx, dx, "vector add left gradient", 0.0F);
+    valid &= validate_result(device_db, db, "vector add right gradient", 0.0F);
     return valid ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
