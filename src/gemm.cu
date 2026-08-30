@@ -839,3 +839,32 @@ void gemm(const float* a, const float* b, float* c, int N, GemmAlgo algo) {
 }
 
 }  // namespace hpc
+
+namespace hpc {
+
+// Row-major C = op(A) op(B) becomes column-major C^T = op(B)^T op(A)^T.
+// This supplies the rectangular, batched GEMMs required by dense attention.
+void gemm_strided_batched(
+    float* output, const float* left, const float* right,
+    int M, int N, int K, int batch_count,
+    int left_batch_stride, int right_batch_stride, int output_batch_stride,
+    bool transpose_left, bool transpose_right, bool accumulate,
+    cudaStream_t stream) {
+    cublasHandle_t handle;
+    cublas_check(cublasCreate(&handle));
+    cublas_check(cublasSetMathMode(handle, CUBLAS_PEDANTIC_MATH));
+    cublas_check(cublasSetStream(handle, stream));
+    const float alpha = 1.0F;
+    const float beta = accumulate ? 1.0F : 0.0F;
+    cublas_check(cublasSgemmStridedBatched(
+        handle,
+        transpose_right ? CUBLAS_OP_T : CUBLAS_OP_N,
+        transpose_left ? CUBLAS_OP_T : CUBLAS_OP_N,
+        N, M, K, &alpha,
+        right, transpose_right ? K : N, right_batch_stride,
+        left, transpose_left ? M : K, left_batch_stride,
+        &beta, output, N, output_batch_stride, batch_count));
+    cublas_check(cublasDestroy(handle));
+}
+
+}  // namespace hpc

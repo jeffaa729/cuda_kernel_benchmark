@@ -40,7 +40,7 @@ bool validate_softmax(const float* cpu_result, const float* gpu_result,
     for (std::size_t i = 0; i < size; ++i) {
         const float tolerance =
             1.0e-5f * std::max(1.0f, std::abs(cpu_result[i]));
-        if (std::abs(cpu_result[i] - gpu_result[i]) > tolerance) {
+        if (!std::isfinite(gpu_result[i]) || std::abs(cpu_result[i] - gpu_result[i]) > tolerance) {
             return false;
         }
     }
@@ -94,7 +94,11 @@ int softmax_benchmark(std::size_t rows, std::size_t cols) {
         hpc::SoftmaxAlgo::WarpShuffleRegCache, device_input, device_output,
         gpu_result.data(), cpu_result.data(), rows, cols);
 
-    return naive_valid && shared_memory_valid && reg_cache_valid ? EXIT_SUCCESS
+    const bool block_reduce_valid = run_and_validate_softmax(
+        hpc::SoftmaxAlgo::BlockReduce, device_input, device_output,
+        gpu_result.data(), cpu_result.data(), rows, cols);
+
+    return naive_valid && shared_memory_valid && reg_cache_valid && block_reduce_valid ? EXIT_SUCCESS
                                                                  : EXIT_FAILURE;
 }
 
